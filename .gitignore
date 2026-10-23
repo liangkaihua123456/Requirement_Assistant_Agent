@@ -40,3 +40,4 @@ dist-ssr
 
 # Agent output files
 output/
+data/
