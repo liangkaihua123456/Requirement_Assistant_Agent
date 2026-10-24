@@ -48,6 +48,9 @@ function buildDesignMarkdown(d: TechnicalDesign): string {
 
 <template>
   <div class="panel card">
+    <div v-if="design._degraded" class="degraded-banner">
+      该设计由系统按 PRD 自动降级生成（模型输出未能解析）。请复核接口与数据表，必要时点击「二次优化」。
+    </div>
     <div class="panel-head" @click="expanded = !expanded" style="cursor:pointer; user-select:none">
       <Code :size="15" style="color:var(--accent)" />
       <span>技术设计方案</span>
@@ -59,6 +62,15 @@ function buildDesignMarkdown(d: TechnicalDesign): string {
 </template>
 
 <style scoped>
+.degraded-banner {
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--warning-subtle);
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.6;
+}
 .panel { padding: 16px; margin-bottom: 12px; }
 .panel-head { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; margin-bottom: 10px; }
 .chip {

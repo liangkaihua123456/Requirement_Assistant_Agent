@@ -62,6 +62,8 @@ const statusMeta = computed(() => {
     queued: { color: 'var(--info)', label: '排队中' },
     running: { color: 'var(--warning)', label: '执行中' },
     waiting_human: { color: 'var(--warning)', label: '等待人工' },
+    cancelling: { color: 'var(--warning)', label: '取消中' },
+    cancelled: { color: 'var(--text-muted)', label: '已取消' },
     completed: { color: 'var(--success)', label: '已完成' },
     error: { color: 'var(--danger)', label: '执行失败' },
   }

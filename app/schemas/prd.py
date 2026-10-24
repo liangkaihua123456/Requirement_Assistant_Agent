@@ -16,10 +16,18 @@ class UserStory(BaseModel):
 class FeatureModule(BaseModel):
     """功能模块。"""
 
+    feature_id: str = Field(
+        "",
+        description="稳定标识（小写蛇形，如 order_refund），用于跨文档追溯；缺省时由系统按名称生成",
+    )
     name: str = Field(..., description="模块名称")
     description: str = Field(..., description="模块描述")
     priority: str = Field("P1", description="优先级: P0 / P1 / P2")
     sub_features: list[str] = Field(default_factory=list, description="子功能列表")
+    acceptance_criteria: list[str] = Field(
+        default_factory=list,
+        description="可验证的验收标准，每条应能被测试用例直接判定",
+    )
 
 
 class UserFlow(BaseModel):

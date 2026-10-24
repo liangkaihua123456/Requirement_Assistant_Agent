@@ -10,6 +10,9 @@ from typing import Any
 
 from langgraph.types import Command
 
+from app.core.cancellation import TaskCancelled, clear_cancel, is_cancelled
+from app.core.config import get_settings
+from app.core.errors import classify_error
 from app.core.logger import logger
 from app.core.observability import merge_task_metric, utc_now_iso
 from app.graph.builder import get_graph
@@ -26,8 +29,9 @@ class WorkflowJob:
 
 
 _queue: asyncio.Queue[WorkflowJob] | None = None
-_worker_task: asyncio.Task | None = None
+_worker_tasks: list[asyncio.Task] = []
 _stop_event: asyncio.Event | None = None
+_recovered_once = False
 
 # per-task 进度队列：task_id -> asyncio.Queue，SSE 端点从这里读取事件
 _progress_queues: dict[str, asyncio.Queue] = {}
@@ -46,31 +50,35 @@ def _drop_progress_queue(task_id: str) -> None:
 
 
 async def start_worker(*, recover: bool = True) -> None:
-    """Start the background worker once per process."""
-    global _queue, _worker_task, _stop_event
+    """Start the background worker pool once per process."""
+    global _queue, _stop_event, _recovered_once
     if _queue is None:
         _queue = asyncio.Queue()
     if _stop_event is None:
         _stop_event = asyncio.Event()
-    if _worker_task is None or _worker_task.done():
-        _stop_event.clear()
-        _worker_task = asyncio.create_task(_worker_loop(), name="agent-task-worker")
-    if recover:
+    _stop_event.clear()
+    _ensure_worker_pool()
+    if recover and not _recovered_once:
+        # Recovery must run once: with N workers each calling it, every pending
+        # task would be enqueued N times and execute N times.
         await recover_pending_tasks()
+        _recovered_once = True
 
 
 async def stop_worker() -> None:
-    """Stop the background worker gracefully."""
-    global _worker_task
+    """Stop all background workers gracefully."""
+    global _worker_tasks
     if _stop_event is not None:
         _stop_event.set()
-    if _worker_task is not None:
-        _worker_task.cancel()
+    tasks = list(_worker_tasks)
+    _worker_tasks = []
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
         try:
-            await _worker_task
+            await task
         except asyncio.CancelledError:
             pass
-        _worker_task = None
 
 
 async def enqueue_start(task_id: str, initial_state: dict[str, Any]) -> None:
@@ -148,19 +156,32 @@ def make_config(task_id: str) -> dict[str, dict[str, str]]:
 
 
 async def _ensure_queue() -> None:
-    if _queue is None or _worker_task is None or _worker_task.done():
+    if _queue is None or _active_worker_count() == 0:
         await _ensure_queue_started_only()
 
 
 async def _ensure_queue_started_only() -> None:
-    global _queue, _worker_task, _stop_event
+    global _queue, _stop_event
     if _queue is None:
         _queue = asyncio.Queue()
     if _stop_event is None:
         _stop_event = asyncio.Event()
-    if _worker_task is None or _worker_task.done():
-        _stop_event.clear()
-        _worker_task = asyncio.create_task(_worker_loop(), name="agent-task-worker")
+    _stop_event.clear()
+    _ensure_worker_pool()
+
+
+def _active_worker_count() -> int:
+    return sum(1 for task in _worker_tasks if not task.done())
+
+
+def _ensure_worker_pool() -> None:
+    """Keep the worker pool at TASK_WORKER_CONCURRENCY consumers."""
+    global _worker_tasks
+    _worker_tasks = [task for task in _worker_tasks if not task.done()]
+    concurrency = get_settings().task_worker_concurrency
+    while len(_worker_tasks) < concurrency:
+        name = f"agent-task-worker-{len(_worker_tasks) + 1}"
+        _worker_tasks.append(asyncio.create_task(_worker_loop(), name=name))
 
 
 async def _worker_loop() -> None:
@@ -173,6 +194,33 @@ async def _worker_loop() -> None:
             logger.error(f"Background workflow job failed: {exc}", extra={"task_id": job.task_id})
         finally:
             _queue.task_done()
+
+
+async def _finalize_cancelled(job, graph, config, state_snapshot, progress_q) -> None:
+    """Persist the cancelled status and release queue resources."""
+    try:
+        values = graph.get_state(config).values
+    except Exception:
+        values = None
+    if isinstance(values, dict) and values:
+        state_snapshot = {**state_snapshot, **safe_serialize(values)}
+    state_snapshot = merge_task_metric(state_snapshot, background_task_success=False)
+    state_snapshot["error_message"] = "任务已取消"
+    metadata = dict(state_snapshot.get("metadata") or {})
+    metadata["error_kind"] = "cancelled"
+    state_snapshot["metadata"] = metadata
+    await repo_task.update_task(
+        job.task_id,
+        status="cancelled",
+        current_node="cancelled",
+        state_snapshot=state_snapshot,
+    )
+    clear_cancel(job.task_id)
+    if progress_q is not None:
+        await _push(progress_q, {"type": "error", "message": "任务已取消"})
+        await progress_q.put(_PROGRESS_SENTINEL)
+        _drop_progress_queue(job.task_id)
+    logger.info("Task cancelled", extra={"task_id": job.task_id})
 
 
 async def _run_job(job: WorkflowJob) -> None:
@@ -202,7 +250,15 @@ async def _run_job(job: WorkflowJob) -> None:
         # 同步节点必须在线程里跑，避免阻塞事件循环
         # 节点进度通过执行前后的 checkpoint history diff 推断，而非 astream_events
         result = await asyncio.to_thread(graph.invoke, job.payload, config)
+    except TaskCancelled:
+        await _finalize_cancelled(job, graph, config, state_snapshot, progress_q)
+        return
     except Exception as exc:
+        # LangGraph may wrap an exception raised inside a node, so the cancel
+        # marker is the authoritative signal rather than the exception type.
+        if is_cancelled(job.task_id):
+            await _finalize_cancelled(job, graph, config, state_snapshot, progress_q)
+            return
         try:
             values = graph.get_state(config).values
         except Exception:
@@ -210,27 +266,51 @@ async def _run_job(job: WorkflowJob) -> None:
         if isinstance(values, dict) and values:
             state_snapshot = {**state_snapshot, **safe_serialize(values)}
         state_snapshot = merge_task_metric(state_snapshot, background_task_success=False, node_error_count=1)
-        state_snapshot["error_message"] = str(exc)
+
+        info = classify_error(exc)
+        failed_node = state_snapshot.get("current_node", "") or ""
+        metadata = dict(state_snapshot.get("metadata") or {})
+        metadata.update(
+            {
+                "error_kind": info.kind,
+                "error_action": info.action,
+                "failed_node": failed_node,
+            }
+        )
+        state_snapshot["metadata"] = metadata
+        state_snapshot["error_message"] = f"{info.title}：{str(exc)[:300]}\n{info.action}"
+
         await repo_task.update_task(
             job.task_id, status="error",
-            current_node=state_snapshot.get("current_node", ""),
+            current_node=failed_node,
             state_snapshot=state_snapshot,
         )
         if progress_q is not None:
-            await _push(progress_q, {"type": "error", "message": str(exc)})
+            await _push(progress_q, {"type": "error", "message": state_snapshot["error_message"]})
             await progress_q.put(_PROGRESS_SENTINEL)
             _drop_progress_queue(job.task_id)
-        logger.error(f"Workflow execution failed: {exc}", extra={"task_id": job.task_id})
+        logger.error(
+            f"Workflow execution failed: {exc}",
+            extra={"task_id": job.task_id, "error_kind": info.kind},
+        )
         return
 
     duration = round(time.perf_counter() - started, 4)
     interrupt_info = extract_interrupt(result)
     status = "waiting_human" if interrupt_info else "completed"
+    # A task can span several graph invocations (clarification, approval). The
+    # state snapshot is rebuilt from each result, so the previous accumulated
+    # duration has to be carried forward explicitly or the list page shows only
+    # the duration of the last short invocation.
+    previous_metrics = ((task.get("state_snapshot") or {}).get("metadata") or {}).get("metrics") or {}
+    total_duration = round(float(previous_metrics.get("background_duration_seconds") or 0) + duration, 4)
+    invoke_count = int(previous_metrics.get("background_invoke_count") or 0) + 1
     state_snapshot = safe_serialize(result)
     state_snapshot = merge_task_metric(
         state_snapshot,
         background_task_success=True,
-        background_duration_seconds=duration,
+        background_duration_seconds=total_duration,
+        background_invoke_count=invoke_count,
         queue_wait_seconds=queue_wait_seconds,
         interrupted_task_recovered=job.kind == "resume",
         resume_success=True if job.kind == "resume" else None,

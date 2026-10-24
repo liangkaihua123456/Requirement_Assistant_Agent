@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+import json
+from copy import deepcopy
+from typing import Any
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class ServiceComponent(BaseModel):
@@ -21,6 +25,9 @@ class DBTable(BaseModel):
     columns: list[dict] = Field(default_factory=list, description="列定义列表, 每项包含 name/type/nullable/description")
     indexes: list[str] = Field(default_factory=list, description="索引描述")
     related_features: list[str] = Field(default_factory=list, description="覆盖的 PRD 功能模块名称")
+    related_feature_ids: list[str] = Field(
+        default_factory=list, description="覆盖的 PRD feature_id 列表，用于精确追溯"
+    )
 
 
 class DBSchema(BaseModel):
@@ -41,6 +48,9 @@ class APIEndpoint(BaseModel):
     response_body: str = Field("", description="响应体描述")
     auth_required: bool = Field(True, description="是否需要认证")
     related_features: list[str] = Field(default_factory=list, description="覆盖的 PRD 功能模块名称")
+    related_feature_ids: list[str] = Field(
+        default_factory=list, description="覆盖的 PRD feature_id 列表，用于精确追溯"
+    )
 
 
 class TechRisk(BaseModel):
@@ -72,3 +82,81 @@ class TechnicalDesign(BaseModel):
     api_endpoints: list[APIEndpoint] = Field(default_factory=list, description="API 端点列表")
     tech_risks: list[TechRisk] = Field(default_factory=list, description="技术风险列表")
     code_scaffold: CodeScaffold = Field(default_factory=CodeScaffold, description="代码骨架建议")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_loose_fields(cls, data: Any) -> Any:
+        """Normalize common deviations instead of failing the whole document.
+
+        The model intermittently emits a string where a list is expected, or a
+        dependency object where the schema asks for a string. Rejecting the
+        whole design over one such field wastes a full generation, so known
+        deviations are converted here.
+        """
+        if not isinstance(data, dict):
+            return data
+        value = deepcopy(data)
+
+        for service in value.get("services") or []:
+            if isinstance(service, dict):
+                service["tech_stack"] = _as_str_list(service.get("tech_stack"))
+
+        for endpoint in value.get("api_endpoints") or []:
+            if isinstance(endpoint, dict):
+                endpoint["related_features"] = _as_str_list(endpoint.get("related_features"))
+                endpoint["related_feature_ids"] = _as_str_list(endpoint.get("related_feature_ids"))
+
+        db_schema = value.get("db_schema")
+        if isinstance(db_schema, dict):
+            db_schema["relationships"] = _as_str_list(db_schema.get("relationships"))
+            for table in db_schema.get("tables") or []:
+                if not isinstance(table, dict):
+                    continue
+                for key in ("related_features", "related_feature_ids", "indexes"):
+                    table[key] = _as_str_list(table.get(key))
+                columns = table.get("columns")
+                if isinstance(columns, list):
+                    table["columns"] = [
+                        column
+                        if isinstance(column, dict)
+                        else {"name": str(column), "type": "text", "nullable": True, "description": str(column)}
+                        for column in columns
+                    ]
+
+        scaffold = value.get("code_scaffold")
+        if isinstance(scaffold, dict):
+            scaffold["directory_structure"] = _as_str_list(scaffold.get("directory_structure"))
+            scaffold["dependencies"] = [_dependency_to_text(item) for item in _as_list(scaffold.get("dependencies"))]
+            scaffold["key_files"] = [
+                item
+                if isinstance(item, dict)
+                else {"path": str(item), "purpose": "", "skeleton": ""}
+                for item in _as_list(scaffold.get("key_files"))
+            ]
+        return value
+
+
+def _as_list(value: Any) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _as_str_list(value: Any) -> list[str]:
+    return [str(item) for item in _as_list(value) if str(item).strip()]
+
+
+def _dependency_to_text(item: Any) -> str:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        name = str(item.get("name") or item.get("package") or "").strip()
+        version = str(item.get("version") or "").strip()
+        purpose = str(item.get("purpose") or item.get("reason") or "").strip()
+        text = " ".join(part for part in (name, version) if part)
+        if purpose:
+            text = f"{text} - {purpose}" if text else purpose
+        return text or json.dumps(item, ensure_ascii=False)
+    return str(item)
