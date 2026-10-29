@@ -1,2 +1,0 @@
-jsonpatch
-jsonpatch_cli
