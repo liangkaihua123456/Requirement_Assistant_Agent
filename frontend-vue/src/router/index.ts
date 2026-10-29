@@ -30,6 +30,16 @@ const router = createRouter({
           component: () => import('@/views/TaskHistory.vue'),
         },
         {
+          path: 'stats',
+          name: 'stats',
+          component: () => import('@/views/UsageStats.vue'),
+        },
+        {
+          path: 'settings',
+          name: 'settings',
+          component: () => import('@/views/ModelSettings.vue'),
+        },
+        {
           path: 'task/:id',
           name: 'detail',
           component: () => import('@/views/TaskDetail.vue'),

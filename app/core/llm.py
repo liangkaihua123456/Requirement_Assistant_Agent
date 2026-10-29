@@ -7,10 +7,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
+import httpx
 from json_repair import repair_json
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_openai import ChatOpenAI
@@ -18,62 +21,148 @@ from pydantic import BaseModel, ValidationError
 
 from app.core.config import get_settings
 from app.core.logger import logger
+from app.core.model_router import ModelProfile, resolve_profile
+from app.core.usage import TokenUsageCallback
 
 
-def _dashscope_extra_body() -> dict | None:
-    settings = get_settings()
-    base_url = settings.openai_api_base.lower()
-    model_name = settings.openai_model_name.lower()
-    thinking_model_prefixes = ("qwen3", "glm-5")
-    if "dashscope" in base_url and model_name.startswith(thinking_model_prefixes):
+def _provider_extra_body(api_base: str, model_name: str) -> dict | None:
+    """Provider-specific switches required for forced tool calling.
+
+    DeepSeek V4.x runs in thinking mode by default and rejects ``tool_choice``
+    while thinking is on, which breaks every structured output call. DashScope
+    Qwen3/GLM-5 need their own flag.
+    """
+    base_url = api_base.lower()
+    model = model_name.lower()
+    if "deepseek" in base_url and model.startswith(("deepseek-flash", "deepseek-v4")):
+        return {"thinking": {"type": "disabled"}}
+    if "dashscope" in base_url and model.startswith(("qwen3", "glm-5")):
         return {"enable_thinking": False}
     return None
 
 
-@lru_cache()
-def get_llm(temperature: float = 0.3) -> ChatOpenAI:
-    """获取默认 LLM 实例。"""
+def _build_llm(profile: ModelProfile, temperature: float) -> ChatOpenAI:
     settings = get_settings()
-    return ChatOpenAI(
-        model=settings.openai_model_name,
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_api_base,
-        temperature=temperature,
-        max_tokens=settings.openai_max_tokens,
-        timeout=settings.openai_timeout_seconds,
-        max_retries=2,
-        extra_body=_dashscope_extra_body(),
-    )
+    extra: dict = {}
+    if profile.reasoning_effort:
+        extra["reasoning_effort"] = profile.reasoning_effort
+    kwargs: dict = {
+        "model": profile.model,
+        "api_key": profile.api_key,
+        "base_url": profile.api_base,
+        "temperature": temperature,
+        "max_tokens": profile.max_tokens,
+        "timeout": settings.openai_timeout_seconds,
+        "max_retries": 2,
+        "extra_body": _provider_extra_body(profile.api_base, profile.model),
+        "callbacks": [TokenUsageCallback(profile.role, profile.model)],
+    }
+    if os.getenv("LLM_PAYLOAD_LOG") == "1":
+        kwargs["http_client"] = httpx.Client(
+            timeout=settings.openai_timeout_seconds,
+            event_hooks={"request": [_log_request_payload]},
+        )
+    return ChatOpenAI(**kwargs, **extra)
 
 
-def get_creative_llm() -> ChatOpenAI:
+_PAYLOAD_LOG = Path("data/logs/llm_payload.jsonl")
+
+
+def _log_request_payload(request: httpx.Request) -> None:
+    """Record the observable shape of each LLM request.
+
+    Prompt-cache debugging needs to know whether two requests share a prefix,
+    which tools/response_format they carried, and whether the wrapper changed
+    anything between calls.
+    """
+    try:
+        data = json.loads(request.content.decode("utf-8", "ignore"))
+        messages = data.get("messages") or []
+        contents = [str(item.get("content") or "") for item in messages]
+        record = {
+            "model": data.get("model"),
+            "message_count": len(messages),
+            "content_lens": [len(text) for text in contents],
+            "first_head": contents[0][:120] if contents else "",
+            "last_head": contents[-1][:120] if contents else "",
+            "tools": [
+                (item.get("function") or {}).get("name")
+                for item in (data.get("tools") or [])
+            ],
+            "tool_choice": data.get("tool_choice"),
+            "response_format": data.get("response_format"),
+            "stream": data.get("stream"),
+            "extra_body": data.get("thinking"),
+        }
+        _PAYLOAD_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _PAYLOAD_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+@lru_cache(maxsize=64)
+def _cached_llm(role: str, temperature: float) -> ChatOpenAI:
+    return _build_llm(resolve_profile(role), temperature)
+
+
+def reload_clients() -> None:
+    """Drop cached clients so saved routing changes take effect immediately."""
+    _cached_llm.cache_clear()
+
+
+def get_llm(temperature: float = 0.3, role: str = "default") -> ChatOpenAI:
+    """获取指定角色的 LLM 实例，角色配置为空时继承全局模型。"""
+    return _cached_llm(role, temperature)
+
+
+def get_creative_llm(role: str = "solution") -> ChatOpenAI:
     """获取用于创意/方案生成的高 temperature LLM。"""
-    settings = get_settings()
-    return ChatOpenAI(
-        model=settings.openai_model_name,
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_api_base,
-        temperature=0.7,
-        max_tokens=settings.openai_max_tokens,
-        timeout=settings.openai_timeout_seconds,
-        max_retries=2,
-        extra_body=_dashscope_extra_body(),
-    )
+    return get_llm(0.7, role=role)
 
 
 class _ContinuableStructuredLLM:
     """结构化调用。输出被 token 上限截断时，沿同一段对话续写并拼接。"""
 
-    def __init__(self, llm: ChatOpenAI, schema: type[BaseModel], method: str, max_continuations: int):
+    def __init__(
+        self,
+        llm: ChatOpenAI,
+        schema: type[BaseModel],
+        method: str,
+        max_continuations: int,
+        slim_context: bool = True,
+        fallback_llm: ChatOpenAI | None = None,
+    ):
         self._llm = llm
         self._schema = schema
         self._method = method
         self._max_continuations = max(0, max_continuations)
+        self._slim_context = slim_context
         self._structured = llm.with_structured_output(schema, method=method, include_raw=True)
+        self._fallback_llm = fallback_llm
+        self._fallback_structured = (
+            fallback_llm.with_structured_output(schema, method=method, include_raw=True)
+            if fallback_llm is not None
+            else None
+        )
 
     def invoke(self, messages: list[BaseMessage] | list[dict], config: Any = None, **kwargs: Any):
-        transcript = list(messages)
-        result = self._structured.invoke(transcript, config, **kwargs)
+        base = list(messages)
+        active_llm = self._llm
+        structured = self._structured
+        try:
+            result = structured.invoke(base, config, **kwargs)
+        except Exception as exc:
+            if self._fallback_structured is None:
+                raise
+            logger.warning(
+                "角色模型调用失败，回退全局模型重试 "
+                f"model={getattr(self._llm, 'model_name', '?')} error={str(exc)[:200]}"
+            )
+            active_llm = self._fallback_llm
+            structured = self._fallback_structured
+            result = structured.invoke(base, config, **kwargs)
+
         parsed = result.get("parsed") if isinstance(result, dict) else result
         if parsed is not None:
             return parsed
@@ -88,14 +177,21 @@ class _ContinuableStructuredLLM:
 
         logger.info(
             "结构化输出达到单次 token 上限，在同一段对话中续写 "
-            f"partial_chars={len(partial)} max_rounds={self._max_continuations}"
+            f"partial_chars={len(partial)} max_rounds={self._max_continuations} "
+            f"slim_context={self._slim_context}"
         )
-        transcript.append(AIMessage(content=partial))
         for round_index in range(1, self._max_continuations + 1):
             problem = _schema_problem(self._schema, partial)
             prompt = _continue_prompt(partial) if limited else _repair_prompt(partial, problem)
-            transcript.append(HumanMessage(content=prompt))
-            response = self._llm.invoke(transcript, config, **kwargs)
+            # Round 1 keeps the full partial: the model needs the whole structure.
+            # Later rounds only need the tail, and resending a growing transcript
+            # is what makes long continuations slow.
+            if self._slim_context and round_index > 1:
+                context = _slim_excerpt(partial)
+            else:
+                context = partial
+            call_messages = base + [AIMessage(content=context), HumanMessage(content=prompt)]
+            response = active_llm.invoke(call_messages, config, **kwargs)
             piece = _message_text(response)
             if not piece.strip():
                 logger.warning(f"结构化输出续写第 {round_index} 轮没有返回文本")
@@ -111,23 +207,41 @@ class _ContinuableStructuredLLM:
             )
             if recovered is not None:
                 return recovered
-            transcript.append(response)
         return _parse_schema(self._schema, partial)
 
 
-def get_structured_llm(schema, *, temperature: float = 0.3, method: str | None = None):
+def _slim_excerpt(partial: str, limit: int = 2000) -> str:
+    if len(partial) <= limit:
+        return partial
+    return "[前文已省略，以下是已生成内容的结尾]\n" + partial[-limit:]
+
+
+def get_structured_llm(
+    schema,
+    *,
+    temperature: float = 0.3,
+    method: str | None = None,
+    role: str = "default",
+):
     """获取可续写的结构化 LLM。
 
-    返回值与原先一样，是 Pydantic 模型实例。单次输出被截断时，
-    会把已生成内容放回同一段对话并继续补写。
+    按角色选择模型；角色模型调用失败时自动回退全局模型重试一次。
     """
     settings = get_settings()
     structured_method = method or settings.structured_output_method
+    profile = resolve_profile(role)
+
+    fallback_llm = None
+    if profile.is_override and settings.model_routing_fallback_enabled:
+        fallback_llm = _cached_llm("default", temperature)
+
     return _ContinuableStructuredLLM(
-        get_llm(temperature),
+        _cached_llm(profile.role, temperature),
         schema,
         structured_method,
         settings.structured_output_max_continuations,
+        slim_context=settings.continuation_slim_context_enabled,
+        fallback_llm=fallback_llm,
     )
 
 
@@ -262,12 +376,12 @@ def _schema_problem(schema: type[BaseModel], text: str) -> str:
     return ""
 
 
-def get_llm_with_tools(tools: list, *, temperature: float = 0.3) -> ChatOpenAI:
+def get_llm_with_tools(tools: list, *, temperature: float = 0.3, role: str = "default") -> ChatOpenAI:
     """获取绑定工具的 LLM 实例，供 tool calling 循环使用。
 
     qwen-max 通过 DashScope OpenAI 兼容接口支持 function calling，
     格式与 OpenAI 一致，bind_tools() 可直接使用。
     每次调用返回新的绑定实例（bind_tools 不可缓存，因为 tools 列表可变），
-    但底层 ChatOpenAI 实例复用 get_llm() 的 lru_cache。
+    但底层 ChatOpenAI 实例复用 _cached_llm()。
     """
-    return get_llm(temperature).bind_tools(tools)
+    return get_llm(temperature, role=role).bind_tools(tools)

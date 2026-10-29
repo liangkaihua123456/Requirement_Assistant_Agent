@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +16,79 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 from dotenv import load_dotenv
 
 load_dotenv(BASE_DIR / ".env")
+
+# 支持按角色覆盖模型配置的角色名
+ROLE_NAMES = (
+    "planner",
+    "solution",
+    "engineer",
+    "reviewer",
+    "repairer",
+    "evaluator",
+    "dialogue",
+    "normalizer",
+    # 图片识别使用的多模态模型。未显式配置时该通道自动关闭，识别走本地 OCR。
+    "vision",
+)
+
+
+class RoleOverride(BaseModel):
+    """单个角色的模型覆盖配置，空值表示继承全局。"""
+
+    model: str = ""
+    api_base: str = ""
+    api_key: str = ""
+    max_tokens: int = 0
+    reasoning_effort: str = ""
+
+
+class ModelPrice(BaseModel):
+    """模型单价：每百万 token 的价格。"""
+
+    input: float = 0.0
+    cached_input: float = 0.0
+    output: float = 0.0
+    currency: str = "CNY"
+
+
+DEFAULT_MODEL_PRICING: dict[str, ModelPrice] = {
+    # DeepSeek 官方价目表（元/百万 token）。这里存的是**高峰时段**单价，
+    # 空闲时段（工作日 9-12、14-18 之外，以及周末与法定节假日全天）按半价计。
+    "deepseek-flash": ModelPrice(input=2.0, cached_input=0.04, output=8.0, currency="CNY"),
+    "deepseek-v4-pro": ModelPrice(input=9.0, cached_input=0.30, output=27.0, currency="CNY"),
+    # OpenAI 官方标准价（美元/百万 token，短上下文），无时段区分
+    "gpt-6.1-sol": ModelPrice(input=2.0, cached_input=0.10, output=10.0, currency="USD"),
+}
+
+
+def _role_overrides() -> dict[str, RoleOverride]:
+    overrides: dict[str, RoleOverride] = {}
+    for role in ROLE_NAMES:
+        prefix = f"ROLE_{role.upper()}_"
+        max_tokens_raw = os.getenv(prefix + "MAX_TOKENS", "0") or "0"
+        overrides[role] = RoleOverride(
+            model=os.getenv(prefix + "MODEL", ""),
+            api_base=os.getenv(prefix + "API_BASE", ""),
+            api_key=os.getenv(prefix + "API_KEY", ""),
+            max_tokens=int(max_tokens_raw) if max_tokens_raw.isdigit() else 0,
+            reasoning_effort=os.getenv(prefix + "REASONING_EFFORT", ""),
+        )
+    return overrides
+
+
+def _model_pricing() -> dict[str, ModelPrice]:
+    pricing = dict(DEFAULT_MODEL_PRICING)
+    raw = os.getenv("MODEL_PRICING_JSON", "").strip()
+    if not raw:
+        return pricing
+    try:
+        parsed = json.loads(raw)
+        for model, item in parsed.items():
+            if isinstance(item, dict):
+                pricing[str(model)] = ModelPrice(**item)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return pricing
 
 
 class Settings(BaseModel):
@@ -39,6 +113,26 @@ class Settings(BaseModel):
     )
     structured_output_max_continuations: int = Field(
         default_factory=lambda: int(os.getenv("STRUCTURED_OUTPUT_MAX_CONTINUATIONS", "3"))
+    )
+
+    # 模型路由：按角色选择模型，空配置继承全局
+    model_routing_enabled: bool = Field(
+        default_factory=lambda: os.getenv("MODEL_ROUTING_ENABLED", "true").lower() == "true"
+    )
+    model_routing_fallback_enabled: bool = Field(
+        default_factory=lambda: os.getenv("MODEL_ROUTING_FALLBACK_ENABLED", "true").lower() == "true"
+    )
+    role_overrides: dict[str, RoleOverride] = Field(default_factory=_role_overrides)
+    model_pricing: dict[str, ModelPrice] = Field(default_factory=_model_pricing)
+    usd_to_cny_rate: float = Field(
+        default_factory=lambda: float(os.getenv("USD_TO_CNY_RATE", "7.1"))
+    )
+    # DeepSeek 空闲时段单价 = 高峰价 × 该系数（官方为半价）
+    off_peak_ratio: float = Field(
+        default_factory=lambda: float(os.getenv("OFF_PEAK_PRICE_RATIO", "0.5"))
+    )
+    peak_timezone_offset: int = Field(
+        default_factory=lambda: int(os.getenv("PEAK_TIMEZONE_OFFSET", "8"))
     )
 
     # LangSmith
@@ -141,6 +235,24 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("DIALOGUE_MAX_ROUNDS", "3"))
     )
 
+    # Input Normalize (False = rule-based cleanup, saves one LLM round-trip)
+    input_normalize_llm_enabled: bool = Field(
+        default_factory=lambda: os.getenv("INPUT_NORMALIZE_LLM_ENABLED", "false").lower() == "true"
+    )
+    input_normalize_max_chars: int = Field(
+        default_factory=lambda: int(os.getenv("INPUT_NORMALIZE_MAX_CHARS", "8000"))
+    )
+
+    # Task queue concurrency (number of tasks executed in parallel)
+    task_worker_concurrency: int = Field(
+        default_factory=lambda: max(1, int(os.getenv("TASK_WORKER_CONCURRENCY", "2")))
+    )
+
+    # Structured output continuation
+    continuation_slim_context_enabled: bool = Field(
+        default_factory=lambda: os.getenv("CONTINUATION_SLIM_CONTEXT_ENABLED", "true").lower() == "true"
+    )
+
     # Context Compression
     dialogue_compression_enabled: bool = Field(
         default_factory=lambda: os.getenv("DIALOGUE_COMPRESSION_ENABLED", "true").lower() == "true"
@@ -150,6 +262,32 @@ class Settings(BaseModel):
     )
     context_budget_total_tokens: int = Field(
         default_factory=lambda: int(os.getenv("CONTEXT_BUDGET_TOTAL_TOKENS", "6000"))
+    )
+
+    # Image intake (OCR / vision)
+    image_extract_enabled: bool = Field(
+        default_factory=lambda: os.getenv("IMAGE_EXTRACT_ENABLED", "true").lower() == "true"
+    )
+    image_max_bytes: int = Field(
+        default_factory=lambda: int(os.getenv("IMAGE_MAX_BYTES", str(10 * 1024 * 1024)))
+    )
+    image_max_pixels: int = Field(
+        default_factory=lambda: int(os.getenv("IMAGE_MAX_PIXELS", "40000000"))
+    )
+    image_target_long_edge: int = Field(
+        default_factory=lambda: int(os.getenv("IMAGE_TARGET_LONG_EDGE", "2000"))
+    )
+    vision_timeout_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("VISION_TIMEOUT_SECONDS", "60"))
+    )
+    ocr_timeout_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("OCR_TIMEOUT_SECONDS", "30"))
+    )
+    ocr_max_concurrency: int = Field(
+        default_factory=lambda: max(1, int(os.getenv("OCR_MAX_CONCURRENCY", "2")))
+    )
+    vision_fallback_ocr_enabled: bool = Field(
+        default_factory=lambda: os.getenv("VISION_FALLBACK_OCR_ENABLED", "true").lower() == "true"
     )
 
     # Plan-Verify (轻量并行规划)

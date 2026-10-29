@@ -65,6 +65,7 @@ class AgentState(TypedDict, total=False):
 
     # ── Repairer ───────────────────────────────────────────────
     repair_attempted: Annotated[bool, _replace]
+    repair_count: Annotated[int, _replace]
 
     # ── Plan-Verify ────────────────────────────────────────────
     plan_evaluation: Annotated[dict, _replace]

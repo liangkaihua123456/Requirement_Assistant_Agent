@@ -1,0 +1,23 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Runtime data (may contain API keys in model_routing.json)
+data/
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# Frontend
+frontend-vue/node_modules/
+frontend-vue/dist/
+frontend-vue/.vite/
+
+# Temp
+.tmp-pw/

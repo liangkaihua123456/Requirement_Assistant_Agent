@@ -31,7 +31,7 @@ def planner_node(state: AgentState) -> dict:
         extra_context = f"用户补充说明：\n{human_feedback}"
 
     # 使用 with_structured_output 绑定 Pydantic Schema
-    structured_llm = get_structured_llm(ClarifiedRequirement)
+    structured_llm = get_structured_llm(ClarifiedRequirement, role="planner")
 
     messages = [
         SystemMessage(content=PLANNER_SYSTEM_PROMPT),
@@ -44,13 +44,17 @@ def planner_node(state: AgentState) -> dict:
     ]
 
     result: ClarifiedRequirement = structured_llm.invoke(messages)
+    if result is None:
+        raise RuntimeError("需求分析节点未返回可解析结果")
     result_dict = result.model_dump()
 
-    # 如果已经人工确认过，则不再进入澄清流程
-    if state.get("human_clarification_confirmed", False):
-        needs_clarification = False
-    else:
-        needs_clarification = result.needs_clarification
+    # 不再直接采信模型自填的 needs_clarification：模型倾向保守地列问题，
+    # 导致每次任务都打断一次。只有缺少目标或核心功能不足时才真正阻断。
+    needs_clarification = _resolve_clarification_need(
+        result,
+        user_input,
+        already_confirmed=bool(state.get("human_clarification_confirmed", False)),
+    )
 
     logger.info(
         "Planner Agent 执行完成",
@@ -101,3 +105,30 @@ def planner_node(state: AgentState) -> dict:
             }
         ],
     }
+
+
+def _resolve_clarification_need(
+    result: ClarifiedRequirement,
+    user_input: str,
+    *,
+    already_confirmed: bool,
+) -> bool:
+    """Only block on information that cannot be inferred.
+
+    The model marks ``needs_clarification`` conservatively, so a task used to
+    stop for questions even when the input already stated the goal and the core
+    features. Blocking is now limited to a missing goal or too few features.
+    """
+    if already_confirmed:
+        return False
+    if not result.needs_clarification:
+        return False
+
+    goal = (result.goal or "").strip()
+    features = [str(item).strip() for item in (result.core_features or []) if str(item).strip()]
+    if not goal or len(features) < 3:
+        return True
+
+    # A detailed brief already states goal, features, and constraints; the
+    # remaining questions can be handled as assumptions instead of blocking.
+    return len(user_input.strip()) < 80

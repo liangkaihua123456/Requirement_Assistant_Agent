@@ -82,7 +82,7 @@ def plan_evaluator_node(state: AgentState) -> dict:
     )
 
     try:
-        structured_llm = get_structured_llm(_EvaluationResult, temperature=0.2)
+        structured_llm = get_structured_llm(_EvaluationResult, temperature=0.2, role="evaluator")
         result: _EvaluationResult = structured_llm.invoke([
             {"role": "system", "content": PLAN_EVALUATOR_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},

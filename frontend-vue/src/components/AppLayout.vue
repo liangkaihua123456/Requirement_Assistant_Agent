@@ -15,6 +15,8 @@ const pageTitles: Record<string, string> = {
   create: '创建任务',
   history: '历史任务',
   detail: '任务详情',
+  stats: '使用统计',
+  settings: '模型配置',
 }
 
 const currentTitle = computed(() => {
@@ -28,12 +30,8 @@ function handleLogout() {
 }
 
 function navigate(name: string) {
-  if (name === 'create') {
-    router.push({ name: 'create' })
-  } else if (name === 'history') {
-    router.push({ name: 'history' })
-  } else if (name === 'dashboard') {
-    router.push({ name: 'dashboard' })
+  if (['create', 'history', 'dashboard', 'stats', 'settings'].includes(name)) {
+    router.push({ name })
   }
 }
 </script>
@@ -249,7 +247,7 @@ function navigate(name: string) {
   width: 100%;
 }
 .app-main-warm {
-  background: #fff8e1;
+  background: var(--bg-primary);
 }
 
 .app-main > :deep(*) {
