@@ -67,6 +67,29 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("PROMPT_VERSION", "v1")
     )
 
+    # DingTalk integration
+    dingtalk_enabled: bool = Field(
+        default_factory=lambda: os.getenv(
+            "DINGTALK_SERVICE_ENABLED", "false"
+        ).lower()
+        == "true"
+    )
+    dingtalk_app_key: str = Field(
+        default_factory=lambda: os.getenv("DINGTALK_APP_KEY", "")
+    )
+    dingtalk_app_secret: str = Field(
+        default_factory=lambda: os.getenv("DINGTALK_APP_SECRET", "")
+    )
+    dingtalk_notify_interval_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("DINGTALK_NOTIFY_INTERVAL_SECONDS", "3"))
+    )
+    dingtalk_lock_path: Path = Field(
+        default_factory=lambda: Path(
+            os.getenv("DINGTALK_LOCK_PATH")
+            or (BASE_DIR / "data" / "dingtalk.lock")
+        )
+    )
+
     # Memory / RAG
     memory_enabled: bool = Field(
         default_factory=lambda: os.getenv("MEMORY_ENABLED", "false").lower() == "true"

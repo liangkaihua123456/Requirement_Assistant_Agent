@@ -107,6 +107,37 @@ Other settings:
 
 Restart the backend after changing `.env`. The model client caches settings, so saving the file alone does not apply them.
 
+### DingTalk robot (optional)
+
+The backend can run a DingTalk Stream-mode robot inside the FastAPI process. It
+creates tasks from group messages, posts clarification/review prompts, accepts
+feedback in the group, and notifies on completion or failure.
+
+```dotenv
+DINGTALK_SERVICE_ENABLED=true
+DINGTALK_APP_KEY=your-client-id
+DINGTALK_APP_SECRET=your-client-secret
+# optional
+DINGTALK_NOTIFY_INTERVAL_SECONDS=3
+```
+
+The app must be an internal DingTalk application with a robot, Stream mode
+enabled, and the robot added to the test group. The secret is read from `.env`
+only; do not commit it.
+
+Operational notes:
+
+- Run a single uvicorn worker. The service uses a `flock` leader lock so only
+  one worker opens the DingTalk WebSocket; other workers keep serving the API.
+- Bindings and `msgId` dedup live in `dingtalk_bindings` / `dingtalk_messages`
+  in the task database, so they survive restarts.
+- Group commands: any text creates a task, `状态` / `status` queries the current
+  task, `通过` approves, and `驳回 <reason>` rejects. Only the original requester
+  can answer a clarification or approve a review.
+- One active task per conversation is enforced by a partial unique index.
+- Notifications use the message `sessionWebhook`, which expires. For long tasks,
+  add an OpenAPI fallback before relying on completion pushes in production.
+
 ## Local deployment
 
 Run these commands from the project root unless noted.

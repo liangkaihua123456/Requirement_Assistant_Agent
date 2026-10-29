@@ -8,7 +8,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from sqlalchemy import Column, DateTime, Integer, String, Text, func
+from sqlalchemy import Column, DateTime, Index, Integer, String, Text, func, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -48,6 +48,47 @@ class FeedbackRecord(Base):
     feedback_type = Column(String(32), default="general")
     content = Column(Text, default="")
     created_at = Column(DateTime, server_default=func.now())
+
+
+class DingTalkBinding(Base):
+    """钉钉会话与任务的绑定。
+
+    active=1 表示该会话当前有进行中的任务；SQLite 部分唯一索引保证
+    同一个会话最多只有一个 active 绑定。
+    """
+
+    __tablename__ = "dingtalk_bindings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(String(128), nullable=False, index=True)
+    task_id = Column(String(64), nullable=False, index=True)
+    requester_staff_id = Column(String(64), default="")
+    active = Column(Integer, nullable=False, default=1)
+    pending_kind = Column(String(32), default="")       # clarification / approval
+    pending_payload = Column(Text, default="")          # JSON：问题列表或评审摘要
+    session_webhook = Column(Text, default="")
+    last_notified_status = Column(String(32), default="")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index(
+            "uq_dingtalk_active_binding",
+            "conversation_id",
+            unique=True,
+            sqlite_where=text("active = 1"),
+        ),
+    )
+
+
+class DingTalkMessage(Base):
+    """钉钉消息去重表：msg_id 是钉钉侧的消息唯一 ID。"""
+
+    __tablename__ = "dingtalk_messages"
+
+    msg_id = Column(String(128), primary_key=True)
+    conversation_id = Column(String(128), nullable=False, index=True)
+    received_at = Column(DateTime, server_default=func.now())
 
 
 _engine = None
