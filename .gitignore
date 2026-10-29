@@ -21,3 +21,9 @@ frontend-vue/.vite/
 
 # Temp
 .tmp-pw/
+
+# Local assistant workspace (contains private notes and operation logs, never commit)
+.workbuddy/
+
+# UI screenshots used for local verification only (large, not tracked)
+screenshots/
