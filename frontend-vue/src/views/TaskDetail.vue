@@ -22,7 +22,7 @@ const taskId = computed(() => (route.params.id as string) || store.taskId || '')
 const loading = ref(false)
 const activeTab = ref('products')
 
-const { lastEvent, connect: connectSSE, disconnect: disconnectSSE } = useSSE(taskId.value)
+const { lastEvent, connect: connectSSE, disconnect: disconnectSSE } = useSSE(() => taskId.value)
 
 onMounted(() => {
   if (taskId.value) { store.setTaskId(taskId.value); queryStatus() }
@@ -46,7 +46,8 @@ async function queryStatus() {
   try {
     const data = await getTaskStatus(id)
     store.setStatusData(data)
-    if (data.status !== 'queued') connectSSE()
+    if (data.status === 'running' || data.status === 'queued') connectSSE()
+    else disconnectSSE()
   } catch { ElMessage.error('查询失败') }
   finally { loading.value = false }
 }

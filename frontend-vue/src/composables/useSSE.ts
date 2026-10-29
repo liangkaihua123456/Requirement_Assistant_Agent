@@ -1,7 +1,7 @@
 import { ref, onUnmounted } from 'vue'
 import type { SSEEvent } from '@/types'
 
-export function useSSE(taskId: string | null) {
+export function useSSE(getTaskId: () => string | null) {
   const lastEvent = ref<SSEEvent | null>(null)
   const isConnected = ref(false)
   const error = ref<string | null>(null)
@@ -9,7 +9,9 @@ export function useSSE(taskId: string | null) {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
   function connect() {
+    const taskId = getTaskId()
     if (!taskId) return
+    if (eventSource && eventSource.readyState !== EventSource.CLOSED) return
     disconnect()
 
     const url = `/api/tasks/${taskId}/stream`
