@@ -41,6 +41,18 @@ def _provider_extra_body(api_base: str, model_name: str) -> dict | None:
     return None
 
 
+def _build_http_client(settings) -> httpx.Client:
+    """显式拆分 connect/read 超时，避免上游半开连接拖到 SDK 重试叠满。"""
+    timeout = httpx.Timeout(
+        connect=settings.openai_connect_timeout_seconds,
+        read=settings.openai_timeout_seconds,
+        write=min(30.0, settings.openai_timeout_seconds),
+        pool=settings.openai_connect_timeout_seconds,
+    )
+    hooks = {"request": [_log_request_payload]} if os.getenv("LLM_PAYLOAD_LOG") == "1" else None
+    return httpx.Client(timeout=timeout, event_hooks=hooks)
+
+
 def _build_llm(profile: ModelProfile, temperature: float) -> ChatOpenAI:
     settings = get_settings()
     extra: dict = {}
@@ -53,15 +65,12 @@ def _build_llm(profile: ModelProfile, temperature: float) -> ChatOpenAI:
         "temperature": temperature,
         "max_tokens": profile.max_tokens,
         "timeout": settings.openai_timeout_seconds,
-        "max_retries": 2,
+        # 默认 0：空结果改由应用层立即重试，避免 180×3 ≈ 10 分钟假死。
+        "max_retries": max(0, settings.openai_max_retries),
         "extra_body": _provider_extra_body(profile.api_base, profile.model),
         "callbacks": [TokenUsageCallback(profile.role, profile.model)],
+        "http_client": _build_http_client(settings),
     }
-    if os.getenv("LLM_PAYLOAD_LOG") == "1":
-        kwargs["http_client"] = httpx.Client(
-            timeout=settings.openai_timeout_seconds,
-            event_hooks={"request": [_log_request_payload]},
-        )
     return ChatOpenAI(**kwargs, **extra)
 
 
@@ -171,8 +180,27 @@ class _ContinuableStructuredLLM:
         partial = _extract_partial(raw)
         limited = _is_length_limited(raw)
         if not limited:
-            return _parse_schema(self._schema, partial)
-        if not partial:
+            recovered = _parse_schema(self._schema, partial)
+            if recovered is not None:
+                return recovered
+            # DeepSeek 偶发空 tool_call（completion_tokens=0）。SDK 重试会叠满超时，
+            # 这里只立即再打一次，失败则快速返回给节点。
+            logger.warning(
+                "结构化输出为空或不可解析，立即重试一次 "
+                f"schema={self._schema.__name__} partial_chars={len(partial or '')}"
+            )
+            result = structured.invoke(base, config, **kwargs)
+            parsed = result.get("parsed") if isinstance(result, dict) else result
+            if parsed is not None:
+                return parsed
+            raw = result.get("raw") if isinstance(result, dict) else None
+            partial = _extract_partial(raw)
+            limited = _is_length_limited(raw)
+            if not limited:
+                return _parse_schema(self._schema, partial)
+            if not partial:
+                return None
+        elif not partial:
             return None
 
         logger.info(

@@ -45,7 +45,9 @@ def planner_node(state: AgentState) -> dict:
 
     result: ClarifiedRequirement = structured_llm.invoke(messages)
     if result is None:
-        raise RuntimeError("需求分析节点未返回可解析结果")
+        raise RuntimeError(
+            "需求分析节点未返回可解析结果（模型空响应或工具调用失败）"
+        )
     result_dict = result.model_dump()
 
     # 不再直接采信模型自填的 needs_clarification：模型倾向保守地列问题，

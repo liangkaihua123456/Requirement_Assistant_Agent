@@ -82,14 +82,37 @@ async function handleDeleteTask() {
 const activeTab = ref('products')
 
 const { lastEvent, connect: connectSSE, disconnect: disconnectSSE } = useSSE(taskId.value)
+let statusPollTimer: ReturnType<typeof setInterval> | null = null
+
+function stopStatusPoll() {
+  if (statusPollTimer) {
+    clearInterval(statusPollTimer)
+    statusPollTimer = null
+  }
+}
+
+function startStatusPoll() {
+  if (statusPollTimer) return
+  // 长 LLM 调用期间 SSE 可能长时间无 node_end；轮询 current_node 避免页面卡在「排队中」。
+  statusPollTimer = setInterval(() => {
+    if (['queued', 'running'].includes(store.taskStatus || '')) {
+      queryStatus()
+    } else {
+      stopStatusPoll()
+    }
+  }, 3000)
+}
 
 onMounted(() => {
   if (taskId.value) { store.setTaskId(taskId.value); queryStatus() }
 })
-onUnmounted(() => disconnectSSE())
+onUnmounted(() => {
+  disconnectSSE()
+  stopStatusPoll()
+})
 
 watch(lastEvent, (event) => {
-  if (event && (event.type === 'node_end' || event.type === 'done' || event.type === 'interrupt' || event.type === 'error')) {
+  if (event && (event.type === 'node_end' || event.type === 'done' || event.type === 'interrupt' || event.type === 'error' || event.type === 'node_start' || event.type === 'heartbeat')) {
     queryStatus()
   }
 })
@@ -107,6 +130,8 @@ async function queryStatus(options: { manual?: boolean } = {}) {
     const data = await getTaskStatus(id)
     store.setStatusData(data)
     if (data.status !== 'queued') connectSSE()
+    if (['queued', 'running'].includes(data.status)) startStatusPoll()
+    else stopStatusPoll()
   } catch {
     if (options.manual) ElMessage.error('查询失败')
   } finally {

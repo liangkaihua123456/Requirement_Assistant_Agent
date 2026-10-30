@@ -10,7 +10,10 @@ export default defineConfig({
     },
   },
   server: {
+    host: '0.0.0.0',
     port: 5173,
+    // 公网反代域名不固定时需放开，否则外网访问返回 403。
+    allowedHosts: true,
     proxy: {
       '/api': {
         // 需要指向别的后端实例时设置 VITE_API_TARGET

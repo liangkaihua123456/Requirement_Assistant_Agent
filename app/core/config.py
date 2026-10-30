@@ -103,7 +103,15 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("OPENAI_MODEL_NAME", "qwen-max")
     )
     openai_timeout_seconds: float = Field(
-        default_factory=lambda: float(os.getenv("OPENAI_TIMEOUT_SECONDS", "180"))
+        # 单次读超时。SDK 层再叠 max_retries 会把等待放大成 N 倍，默认不要太长。
+        default_factory=lambda: float(os.getenv("OPENAI_TIMEOUT_SECONDS", "90"))
+    )
+    openai_connect_timeout_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("OPENAI_CONNECT_TIMEOUT_SECONDS", "10"))
+    )
+    openai_max_retries: int = Field(
+        # 默认 0：避免 180×3 叠成约 10 分钟无进度。空结果由应用层立即重试一次。
+        default_factory=lambda: int(os.getenv("OPENAI_MAX_RETRIES", "0"))
     )
     structured_output_method: str = Field(
         default_factory=lambda: os.getenv("STRUCTURED_OUTPUT_METHOD", "function_calling")

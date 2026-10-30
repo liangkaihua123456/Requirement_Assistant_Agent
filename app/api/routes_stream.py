@@ -73,9 +73,9 @@ async def _event_generator(
     try:
         while True:
             try:
-                event = await asyncio.wait_for(progress_q.get(), timeout=120.0)
+                event = await asyncio.wait_for(progress_q.get(), timeout=5.0)
             except asyncio.TimeoutError:
-                # 超过 2 分钟没有新事件，发心跳保持连接
+                # 短心跳：前端可借此轮询 current_node，长 LLM 调用时进度条不会假死在「排队中」
                 yield _sse({"type": "heartbeat"})
                 continue
 

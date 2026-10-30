@@ -32,6 +32,15 @@ def trace_node(node_name: str, llm_calls: int = 0):
             if task_id and is_cancelled(task_id):
                 raise TaskCancelled(task_id)
 
+            # 节点一开始就写回 current_node，避免长 LLM 调用期间页面一直显示「排队中」。
+            if task_id:
+                try:
+                    from app.storage.task_progress import mark_current_node
+
+                    mark_current_node(task_id, node_name)
+                except Exception:
+                    pass
+
             started = time.perf_counter()
             usage_token = start_tracking(task_id=task_id, node=node_name)
             try:

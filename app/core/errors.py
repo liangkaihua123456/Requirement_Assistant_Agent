@@ -47,6 +47,12 @@ def classify_error(exc: Exception) -> ErrorInfo:
             title="无法连接模型服务",
             action="检查网络与 API Base 配置后重试",
         )
+    if "未返回可解析结果" in text or "empty" in lower and "structured" in lower:
+        return ErrorInfo(
+            kind="empty_response",
+            title="模型返回空的结构化结果",
+            action="多为供应商偶发空包；请直接点击「重试任务」",
+        )
     return ErrorInfo(
         kind="unknown",
         title="任务执行失败",

@@ -235,9 +235,14 @@ async def _run_job(job: WorkflowJob) -> None:
         queue_wait_seconds=queue_wait_seconds,
         background_started_at=utc_now_iso(),
     )
+    # 离开 queued 后立刻标成真实节点，避免详情页在首个 LLM 调用前一直显示「排队中」。
+    boot_node = str(task.get("current_node") or "").strip()
+    if boot_node in {"", "queued"}:
+        boot_node = "input_normalize"
     await repo_task.update_task(
         job.task_id,
         status="running",
+        current_node=boot_node,
         state_snapshot=state_snapshot,
     )
 
