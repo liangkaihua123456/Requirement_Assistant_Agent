@@ -1,2 +1,0 @@
-[console_scripts]
-httpx2 = httpx2._main:main
