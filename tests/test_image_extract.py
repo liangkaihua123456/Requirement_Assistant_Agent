@@ -17,12 +17,28 @@ from app.main import app
 from app.vision import vision_model
 
 
-def _render_requirement_image() -> bytes:
-    font_path = "C:/Windows/Fonts/msyh.ttc"
+def _font_loadable(path: str, size: int) -> bool:
     try:
+        ImageFont.truetype(path, size)
+        return True
+    except OSError:
+        return False
+
+
+def _render_requirement_image() -> bytes:
+    candidates = [
+        "C:/Windows/Fonts/msyh.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    ]
+    font_path = next(
+        (c for c in candidates if _font_loadable(c, 26)), None
+    )
+    if font_path:
         font = ImageFont.truetype(font_path, 26)
         title_font = ImageFont.truetype(font_path, 32)
-    except OSError:  # 非 Windows 或无中文字体时退回默认字体
+    else:  # 无中文字体时退回默认字体（此时 OCR 中文用例会失去意义，由下方 skip 处理）
         font = ImageFont.load_default()
         title_font = font
     lines = [
@@ -46,7 +62,12 @@ def _render_requirement_image() -> bytes:
 
 @pytest.fixture(scope="module")
 def client() -> TestClient:
-    return TestClient(app)
+    # /extract 路由挂了 get_current_user，测试用依赖覆盖绕过真实 JWT
+    from app.api.deps import get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: {"id": 1, "username": "test"}
+    yield TestClient(app)
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -106,7 +127,10 @@ def test_ocr_extracts_chinese_text(client: TestClient, sample_png: bytes):
     assert "扫码" in data["text"]
     assert data["image"]["format"] == "PNG"
     # 结构化拆分应把目标与功能分开
-    assert "门店" in data["goal"]
+    # 注：不用"门店"断言——"门↔内"是 PP-OCR 已知易混字（实测同图不同字号
+    # 结果翻转），"点单/扫码"在该模型下稳定，断言意图不变：OCR 链路真的
+    # 提取出了中文语义字段。
+    assert "点单" in data["goal"]
     assert any("支付" in item for item in data["features"])
 
 
