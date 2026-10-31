@@ -12,17 +12,38 @@ from app.core.config import get_settings
 from app.storage.repo_memory import search_memory_sync
 
 
+def resolve_memory_enabled(metadata: dict | None = None) -> bool:
+    """Single source of truth for the memory switch.
+
+    A per-task ``metadata.memory_enabled`` value overrides the global setting
+    so a task can opt in or out without restarting the process.
+    """
+    if metadata and "memory_enabled" in metadata:
+        return bool(metadata.get("memory_enabled"))
+    return bool(get_settings().memory_enabled)
+
+
 def retrieve_few_shot_examples(
     query: str,
     top_k: int | None = None,
     memory_types: list[str] | None = None,
+    enabled: bool | None = None,
 ) -> list[dict]:
     """Retrieve high-quality cases from ChromaDB for few-shot use.
 
     Only returns cases with overall_score >= few_shot_min_score (default 7.0).
     Over-fetches by 3x to allow for quality filtering down to top_k.
+
+    When memory is disabled this returns immediately: building a few-shot
+    block used to open a Chroma client and seed it on every agent call even
+    with MEMORY_ENABLED=false.
     """
     settings = get_settings()
+    if enabled is None:
+        enabled = settings.memory_enabled
+    if not enabled:
+        return []
+
     top_k = top_k if top_k is not None else settings.few_shot_top_k
     memory_types = memory_types or ["case"]
 
@@ -137,12 +158,22 @@ def build_few_shot_for_task(
     clarified_req: dict | None = None,
     top_k: int | None = None,
     max_chars: int | None = None,
+    metadata: dict | None = None,
+    enabled: bool | None = None,
 ) -> str:
     """One-stop: build few-shot text from task context.
 
     Constructs a search query from PRD features + goal, retrieves
     best-matching historical cases, and formats them for prompt injection.
+
+    Returns an empty string without touching the memory store when the
+    memory switch is off.
     """
+    if enabled is None:
+        enabled = resolve_memory_enabled(metadata)
+    if not enabled:
+        return ""
+
     query = _build_search_query(prd_doc, clarified_req or {})
     if not query.strip():
         return ""
@@ -151,7 +182,7 @@ def build_few_shot_for_task(
     top_k = top_k if top_k is not None else settings.few_shot_top_k
     max_chars = max_chars if max_chars is not None else settings.few_shot_max_chars
 
-    cases = retrieve_few_shot_examples(query, top_k=top_k)
+    cases = retrieve_few_shot_examples(query, top_k=top_k, enabled=True)
     return format_few_shot(cases, max_chars=max_chars)
 
 

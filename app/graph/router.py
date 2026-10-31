@@ -12,6 +12,30 @@ from app.core.config import get_settings
 from app.graph.state import AgentState
 
 
+def route_entry(
+    state: AgentState,
+) -> Literal["input_normalize", "engineer", "repairer", "reviewer", "solution"]:
+    """图入口：支持二次优化与失败重试，跳过已经完成的阶段。
+
+    二次优化带原设计时走 repairer；失败重试按失败节点续跑。
+    """
+    metadata = state.get("metadata") or {}
+
+    if metadata.get("retry"):
+        failed = str(metadata.get("failed_node") or "")
+        if failed == "reviewer" and state.get("technical_design"):
+            return "reviewer"
+        if failed in ("engineer", "repairer") or (failed == "reviewer" and not state.get("technical_design")):
+            return "repairer" if state.get("technical_design") else "engineer"
+        return "input_normalize"
+
+    if metadata.get("reoptimize") and state.get("prd_doc"):
+        if state.get("technical_design") and metadata.get("reoptimize_mode", "repair") == "repair":
+            return "repairer"
+        return "engineer"
+    return "input_normalize"
+
+
 def route_after_planner(
     state: AgentState,
 ) -> Literal["human_clarification", "solution"]:
@@ -64,14 +88,19 @@ def route_after_reviewer(
     return "human_approval"
 
 
+MAX_REPAIR_ATTEMPTS = 2
+
+
 def _should_repair(state: AgentState) -> bool:
-    """Only use Repairer when enabled, not yet attempted, and gaps are fixable."""
+    """Repairer runs before any full engineer rewrite, up to a fixed budget。
+
+    定向修订比整份重写更稳定，因此连续两轮未通过都先尝试 repairer，
+    额度用尽后才回退到 engineer。
+    """
     settings = get_settings()
     if not settings.repairer_enabled:
         return False
-    if state.get("repair_attempted", False):
-        return False
-    return True
+    return int(state.get("repair_count") or 0) < MAX_REPAIR_ATTEMPTS
 
 
 def route_after_dialogue_reviewer(
@@ -113,12 +142,15 @@ def _dialogue_should_continue(state: AgentState) -> bool:
 
 def route_after_human_approval(
     state: AgentState,
-) -> Literal["package_output", "solution"]:
+) -> Literal["package_output", "solution", "repairer"]:
     """人工审批之后的路由。
 
     - 批准 -> package_output
-    - 驳回 -> solution（重做）
+    - 驳回且有技术设计 -> repairer（定向修订，PRD 不变）
+    - 驳回且无设计 -> solution（重做）
     """
     if state.get("human_approved", False):
         return "package_output"
+    if state.get("technical_design"):
+        return "repairer"
     return "solution"

@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,30 +17,53 @@ from app.core.logger import logger
 
 
 class DashScopeEmbeddingFunction:
-    """Semantic embedding via DashScope text-embedding-v3 with hash fallback."""
+    """Semantic embedding via DashScope text-embedding-v3 with hash fallback.
+
+    The embedding endpoint is frequently unavailable when the chat provider is
+    OpenAI-compatible but does not serve embeddings. A failed request must not
+    cost a network timeout on every agent call, so the first failure locks the
+    function into the local hash implementation for the process lifetime.
+    """
 
     def __init__(self, model: str = "text-embedding-v3", dimensions: int = 1024) -> None:
         self.model = model
         self.dimensions = dimensions
         self._hash_fallback: HashEmbeddingFunction | None = None
+        self._disabled = False
+        self._lock = threading.Lock()
 
     def __call__(self, input: list[str]) -> list[list[float]]:
+        if self._disabled:
+            return self._hash_embed(input)
         try:
             settings = get_settings()
+            if not settings.openai_api_key:
+                raise RuntimeError("OPENAI_API_KEY is empty, skipping remote embeddings")
             import openai
 
             client = openai.OpenAI(
                 api_key=settings.openai_api_key,
                 base_url=settings.openai_api_base,
+                timeout=3.0,
+                max_retries=0,
             )
             response = client.embeddings.create(model=self.model, input=input)
             embeddings = sorted(response.data, key=lambda e: e.index)
             return [e.embedding for e in embeddings]
         except Exception as exc:
-            logger.warning(f"DashScope embedding failed, falling back to hash: {exc}")
-            if self._hash_fallback is None:
-                self._hash_fallback = HashEmbeddingFunction(self.dimensions)
-            return self._hash_fallback(input)
+            with self._lock:
+                already_disabled = self._disabled
+                self._disabled = True
+            if not already_disabled:
+                logger.warning(
+                    f"Embedding endpoint unavailable, falling back to local hash for this process: {exc}"
+                )
+            return self._hash_embed(input)
+
+    def _hash_embed(self, texts: list[str]) -> list[list[float]]:
+        if self._hash_fallback is None:
+            self._hash_fallback = HashEmbeddingFunction(self.dimensions)
+        return self._hash_fallback(texts)
 
 
 class HashEmbeddingFunction:
@@ -99,6 +123,9 @@ class ChromaMemoryStore:
         )
         self._collection = None
         self._fallback_records: list[dict[str, Any]] = []
+        self._seeded = False
+        self._connect_failed = False
+        self._lock = threading.RLock()
 
     @property
     def available(self) -> bool:
@@ -221,48 +248,64 @@ class ChromaMemoryStore:
         return False
 
     def _ensure_seeded(self) -> None:
-        self._connect()
-        seeded = False
-        if self._collection is not None:
-            try:
-                seeded = self._collection.count() > 0
-            except Exception as exc:  # pragma: no cover
-                logger.warning(f"Chroma memory count failed: {exc}")
-        else:
-            seeded = bool(self._fallback_records)
-        if seeded:
+        if self._seeded:
             return
-        for item in seed_memory_items():
-            self.save(
-                item["content"],
-                metadata=item["metadata"],
-                memory_id=item["id"],
-            )
+        with self._lock:
+            if self._seeded:
+                return
+            self._connect()
+            seeded = False
+            if self._collection is not None:
+                try:
+                    seeded = self._collection.count() > 0
+                except Exception as exc:  # pragma: no cover
+                    logger.warning(f"Chroma memory count failed: {exc}")
+            else:
+                seeded = bool(self._fallback_records)
+            if not seeded:
+                for item in seed_memory_items():
+                    self.save(
+                        item["content"],
+                        metadata=item["metadata"],
+                        memory_id=item["id"],
+                    )
+            # Mark as attempted even on failure: retrying the whole seed path on
+            # every search is far more expensive than running without memory.
+            self._seeded = True
 
     def _connect(self) -> bool:
         if self._collection is not None:
             return True
+        if self._connect_failed:
+            return False
         if os.getenv("DISABLE_CHROMA_MEMORY", "").lower() == "true":
+            self._connect_failed = True
             return False
-        try:
-            os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
-            import chromadb
-            from chromadb.config import Settings as ChromaSettings
+        with self._lock:
+            if self._collection is not None:
+                return True
+            if self._connect_failed:
+                return False
+            try:
+                os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+                import chromadb
+                from chromadb.config import Settings as ChromaSettings
 
-            self.persist_dir.mkdir(parents=True, exist_ok=True)
-            client = chromadb.PersistentClient(
-                path=str(self.persist_dir),
-                settings=ChromaSettings(anonymized_telemetry=False),
-            )
-            self._collection = client.get_or_create_collection(
-                name=self.collection_name,
-                embedding_function=self.embedding_function,
-                metadata={"description": "Multi-agent delivery memory"},
-            )
-            return True
-        except Exception as exc:
-            logger.warning(f"Chroma memory unavailable, using in-process fallback: {exc}")
-            return False
+                self.persist_dir.mkdir(parents=True, exist_ok=True)
+                client = chromadb.PersistentClient(
+                    path=str(self.persist_dir),
+                    settings=ChromaSettings(anonymized_telemetry=False),
+                )
+                self._collection = client.get_or_create_collection(
+                    name=self.collection_name,
+                    embedding_function=self.embedding_function,
+                    metadata={"description": "Multi-agent delivery memory"},
+                )
+                return True
+            except Exception as exc:
+                self._connect_failed = True
+                logger.warning(f"Chroma memory unavailable, using in-process fallback: {exc}")
+                return False
 
     def _format_chroma_results(self, result: dict[str, Any]) -> list[dict[str, Any]]:
         documents = (result.get("documents") or [[]])[0]

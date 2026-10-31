@@ -11,6 +11,10 @@ const loading = ref(false)
 const fetched = ref(false)
 const copied = ref(false)
 
+function download(kind: 'zip' | 'docx') {
+  window.open(`/api/tasks/${props.taskId}/export/${kind}`, '_blank')
+}
+
 async function fetchResult() {
   loading.value = true
   try { result.value = await getTaskResult(props.taskId); fetched.value = true }
@@ -31,6 +35,12 @@ async function copyResult() {
     <div class="panel-head">
       <PackageOpen :size="15" style="color:var(--success)" />
       <span>交付结果</span>
+      <el-button class="btn-load" size="small" style="margin-left:8px" @click="download('zip')">
+        <Download :size="12" style="margin-right:3px" /> ZIP
+      </el-button>
+      <el-button class="btn-load" size="small" @click="download('docx')">
+        <Download :size="12" style="margin-right:3px" /> Word
+      </el-button>
       <el-button v-if="!fetched" class="btn-load" size="small" :loading="loading" @click="fetchResult">
         <Download :size="12" style="margin-right:3px" /> 加载
       </el-button>

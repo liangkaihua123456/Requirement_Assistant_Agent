@@ -26,6 +26,9 @@ PLANNER_SYSTEM_PROMPT = """你是一名资深的需求分析师（Planner Agent�
 
 注意：
 - 如果用户需求非常模糊，你应当在 open_questions 中列出需要澄清的问题。
+- needs_clarification 仅在缺少"无法从行业惯例推断"的关键信息时为 true，例如行业不明、核心业务流程缺失、存在互斥的合规要求。
+- 如果输入已经包含明确目标和至少 3 条核心功能，应把 needs_clarification 设为 false，把不确定项写入 assumptions。
+- open_questions 可以保留作为参考，但不要因为未写明非关键细节而阻断流程。
 - 如果你可以合理推断出一些内容，放在 assumptions 中。
 - core_features 应该是具体的功能描述，而非泛泛而谈。
 - 若需求存在多种合理的架构或策略方向（如 单体 vs 微服务、RESTful vs GraphQL、同步 vs 异步），
@@ -53,17 +56,21 @@ SOLUTION_SYSTEM_PROMPT = """你是一名资深的产品经理（Solution Agent�
 输出要求（严格遵循 JSON Schema）：
 - product_name: 产品/项目名称
 - positioning: 产品定位（一段话）
-- user_stories: 用户故事列表（每个包含 role / action / benefit）
-- feature_modules: 功能模块列表（每个包含 name / description / priority / sub_features）
-- user_flows: 用户流程列表（每个包含 name / steps）
-- non_functional_requirements: 非功能性需求列表
+- user_stories: 用户故事列表（每个包含 role / action / benefit），至少 3 条
+- feature_modules: 功能模块列表（每个包含 feature_id / name / description / priority / sub_features / acceptance_criteria）
+  - feature_id: 小写蛇形英文标识（如 order_refund），全文唯一，供下游 API 与数据表追溯
+  - acceptance_criteria: 至少 2 条可验证的验收标准，写清触发条件与预期结果，能被测试用例直接判定
+- user_flows: 用户流程列表（每个包含 name / steps），至少覆盖 P0 模块的主路径
+- non_functional_requirements: 非功能性需求列表（每个包含 category / description / metric），至少 3 条，metric 必须是量化指标
 - success_metrics: 成功指标
 - out_of_scope: 不在范围内的功能
 
 注意：
+- 功能模块数量控制在 3-6 个。按业务能力归并（MECE），不要把同一能力的增删改查拆成多个模块。
 - 功能模块需要按优先级排序（P0 > P1 > P2）。
 - 用户故事应覆盖核心功能的主要使用场景。
 - 非功能性需求应包含性能、安全、可用性等维度。
+- 不要输出空数组占位；宁可给出保守但具体的取值。
 """
 
 SOLUTION_USER_PROMPT = """请基于以下需求澄清结果，生成完整的产品方案和 PRD 草稿。
@@ -104,6 +111,12 @@ ENGINEER_SYSTEM_PROMPT = """你是一名资深的技术架构师（Engineer Agen
 - API 设计需遵循 RESTful 风格。
 - 技术风险必须给出缓解措施。
 - 代码骨架应该具有可操作性。
+
+输出体积约束（必须遵守，否则单次输出会被截断）：
+- 每个功能模块最多 2 个 API 端点、1 张数据库表；不要为同一资源重复设计增删改查的全部端点。
+- 每张表的 columns 不超过 8 个，只列业务关键字段与必要的时间/状态字段。
+- tech_risks 不超过 6 条，每条 mitigation 一句话。
+- code_scaffold.key_files 不超过 5 条，skeleton 只写关键结构，不要贴完整代码。
 """
 
 ENGINEER_USER_PROMPT = """请基于以下产品方案和 PRD 文档，生成完整的技术设计方案。
@@ -132,6 +145,11 @@ REVIEWER_SYSTEM_PROMPT = """你是一名资深的技术评审专家（Reviewer A
 - overall_score: 总体评分（0-10）
 - prd_score: PRD 质量评分（0-10）
 - tech_score: 技术设计质量评分（0-10）
+- completeness_score: 完整性（0-10）—— 每个 PRD 功能是否有服务、API、数据表承载
+- consistency_score: 一致性（0-10）—— 术语、范围、优先级在 PRD 与技术设计间是否一致
+- feasibility_score: 可实现性（0-10）—— 技术选型、数据模型、接口是否可落地
+- security_score: 安全性（0-10）—— 认证、权限、审计、敏感数据、幂等是否覆盖
+- testability_score: 可测试性（0-10）—— 验收标准与 API 契约是否可验证
 - issues: 问题列表（每个包含 category / severity / description / suggestion / target）
   - category: 一致性 / 完整性 / 可实现性 / 其他
   - severity: critical / high / medium / low
@@ -140,6 +158,10 @@ REVIEWER_SYSTEM_PROMPT = """你是一名资深的技术评审专家（Reviewer A
 - passed: 是否通过评审（boolean）
 - reflow_target: 若未通过，建议回流目标（solution / engineer / none）
 - summary: 评审总结
+
+评分要求：
+- 五个维度必须逐项打分，不要只给总分；overall_score 会由系统按权重重新计算（完整性 0.30、一致性 0.25、可实现性 0.20、可测试性 0.15、安全性 0.10）。
+- 同一份产物重复评审时，各维度分值应保持稳定，不要凭整体印象浮动。
 
 评审标准：
 - overall_score >= 7 且无 critical 问题时，passed = true
@@ -153,13 +175,13 @@ REVIEWER_USER_PROMPT = """请对以下产品方案和技术设计进行全面评
 PRD 文档：
 {prd_doc}
 
-技术设计方案：
-{technical_design}
-
 需求澄清结果：
 {clarified_requirement}
 
 {extra_context}
+
+技术设计方案：
+{technical_design}
 
 请严格按照 JSON Schema 输出。"""
 
@@ -168,9 +190,13 @@ ENGINEER_SYSTEM_PROMPT += """
 Quality gate for this version:
 - Treat every PRD feature module as a traceability requirement.
 - For each feature module, make sure the design has a clear service component, at least one API endpoint, and at least one database table or column that carries that feature.
-- Fill related_features on API endpoints and DB tables with the exact PRD feature module names they cover.
+- Set related_feature_ids on every API endpoint and DB table to the exact feature_id values from the PRD; related_features stays as the human-readable fallback.
 - Do not rely only on generic APIs such as /users, /dashboard, /items, or /settings when the PRD has domain-specific features.
 - Put feature names or close domain terms directly in API descriptions, table descriptions, column descriptions, services, or risks so reviewers can verify traceability.
+- Every state transition written in the PRD (submit, approve, reject, cancel, refund, renew, ship, complete, check-in, verify, close, expire) must map to its own endpoint with an explicit action segment, for example POST /orders/{id}/cancel or POST /loans/{id}/renew. A generic PATCH /orders/{id} alone does not count as carrying the action.
+- One endpoint per business action: never ship two paths for the same action (for example /orders/cancel plus /orders/{id}/cancel). Pick one canonical path and keep it.
+- Aggregate read endpoints by resource: one list endpoint and one detail endpoint per resource. Do not create a separate endpoint for each filter, view, or field combination.
+- Every P0 module needs at least one read endpoint (list or detail); a create-only endpoint is treated as incomplete coverage.
 - For high-risk domains such as flash sale, payment, inventory, RBAC, AI retrieval, healthcare, privacy, audit, and multi-tenant data, include idempotency, rate limiting, consistency, permissions, audit logs, encryption, or retention controls where relevant.
 - If memory context is provided, use its API/DB patterns as inspiration, but adapt them to the current PRD instead of copying blindly.
 """

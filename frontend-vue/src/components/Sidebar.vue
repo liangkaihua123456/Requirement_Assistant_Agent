@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { LayoutDashboard, PlusCircle, History } from '@lucide/vue'
+import { LayoutDashboard, PlusCircle, History, BarChart3, Settings2 } from '@lucide/vue'
 
 const props = defineProps<{ collapsed: boolean }>()
 const emit = defineEmits<{ navigate: [name: string] }>()
@@ -12,6 +12,8 @@ const navItems = computed(() => [
   { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard, active: route.name === 'dashboard' },
   { key: 'create', label: '创建任务', icon: PlusCircle, active: route.name === 'create' },
   { key: 'history', label: '历史任务', icon: History, active: route.name === 'history' || route.name === 'detail' },
+  { key: 'stats', label: '使用统计', icon: BarChart3, active: route.name === 'stats' },
+  { key: 'settings', label: '模型配置', icon: Settings2, active: route.name === 'settings' },
 ])
 </script>
 

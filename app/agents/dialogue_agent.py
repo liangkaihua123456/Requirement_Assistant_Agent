@@ -9,6 +9,7 @@ Replaces the single "reflow with issue list" with a structured dialogue:
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,6 +25,78 @@ from app.memory.short_term import add_entry, format_for_prompt
 from app.schemas.design import TechnicalDesign
 from app.schemas.prd import PRDDocument
 from app.schemas.review import ReviewResult
+
+
+class DesignDelta(BaseModel):
+    """Incremental design update produced during a dialogue round.
+
+    Emitting only the changed endpoints and tables keeps the reply inside the
+    output limit; a full design for 7+ modules regularly exceeds it.
+    """
+
+    answers: list[str] = Field(default_factory=list, description="逐条回答问题")
+    api_updates: list[dict] = Field(
+        default_factory=list, description="新增或修改的 API 端点，必须给出完整字段"
+    )
+    db_updates: list[dict] = Field(
+        default_factory=list, description="新增或修改的数据表，必须给出完整字段"
+    )
+    architecture_note: str = Field("", description="架构层面的补充说明，可为空")
+
+
+def _apply_design_delta(
+    design: dict[str, Any], delta: DesignDelta
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """Merge delta entries into the design, replacing matches by key."""
+    merged = deepcopy(design or {})
+    apis = merged.setdefault("api_endpoints", [])
+    db_schema = merged.setdefault("db_schema", {})
+    tables = db_schema.setdefault("tables", [])
+
+    api_index = {
+        (str(item.get("method") or "").upper(), str(item.get("path") or "")): pos
+        for pos, item in enumerate(apis)
+    }
+    table_index = {
+        str(item.get("table_name") or ""): pos for pos, item in enumerate(tables)
+    }
+
+    added_api = updated_api = 0
+    for item in delta.api_updates or []:
+        if not isinstance(item, dict) or not item.get("path"):
+            continue
+        key = (str(item.get("method") or "POST").upper(), str(item.get("path")))
+        if key in api_index:
+            apis[api_index[key]] = {**apis[api_index[key]], **item}
+            updated_api += 1
+        else:
+            apis.append(item)
+            added_api += 1
+
+    added_db = updated_db = 0
+    for item in delta.db_updates or []:
+        if not isinstance(item, dict) or not item.get("table_name"):
+            continue
+        name = str(item.get("table_name"))
+        if name in table_index:
+            tables[table_index[name]] = {**tables[table_index[name]], **item}
+            updated_db += 1
+        else:
+            tables.append(item)
+            added_db += 1
+
+    if delta.architecture_note:
+        note = str(delta.architecture_note).strip()
+        overview = str(merged.get("architecture_overview") or "").strip()
+        if note and note not in overview:
+            merged["architecture_overview"] = f"{overview}\n{note}".strip()
+
+    return merged, {
+        "api_added": added_api,
+        "api_updated": updated_api,
+        "db_added": added_db,
+        "db_updated": updated_db,
+    }
 
 
 def dialogue_reviewer_node(state: AgentState) -> dict:
@@ -126,11 +199,11 @@ def dialogue_engineer_node(state: AgentState) -> dict:
         max_tokens=1200,
     )
 
-    structured_llm = get_structured_llm(TechnicalDesign)
+    structured_llm = get_structured_llm(DesignDelta, role="dialogue")
     user_content = DIALOGUE_ENGINEER_PROMPT.format(
         dialogue_questions=q_text,
-        prd_doc=json.dumps(prd_doc, ensure_ascii=False, indent=2),
-        current_design=json.dumps(design, ensure_ascii=False, indent=2),
+        prd_doc=json.dumps(prd_doc, ensure_ascii=False, indent=2, sort_keys=True),
+        current_design=json.dumps(design, ensure_ascii=False, indent=2, sort_keys=True),
         task_memory=task_memory_text,
     )
 
@@ -139,21 +212,32 @@ def dialogue_engineer_node(state: AgentState) -> dict:
         HumanMessage(content=user_content),
     ]
 
-    result: TechnicalDesign = structured_llm.invoke(messages)
-    result_dict = result.model_dump()
+    delta = structured_llm.invoke(messages)
+    if delta is None:
+        logger.warning("Dialogue engineer returned no structured delta, keeping design")
+        delta = DesignDelta()
 
+    result_dict, stats = _apply_design_delta(design, delta)
     api_count = len(result_dict.get("api_endpoints") or [])
     table_count = len((result_dict.get("db_schema") or {}).get("tables") or [])
 
     task_mem = add_entry(
         state, "dialogue_engineer",
-        summary=f"回答了 {len(engineer_qs)} 个问题，更新了技术设计",
-        metrics={"api_count": api_count, "table_count": table_count},
+        summary=(
+            f"回答了 {len(engineer_qs)} 个问题，"
+            f"API +{stats['api_added']}/~{stats['api_updated']}，"
+            f"表 +{stats['db_added']}/~{stats['db_updated']}"
+        ),
+        metrics={"api_count": api_count, "table_count": table_count, **stats},
     )
 
     dialogue_history = (state.get("dialogue_history") or []) + [
         {"role": "reviewer", "questions": engineer_qs},
-        {"role": "engineer", "summary": f"更新了设计，API={api_count}, 表={table_count}"},
+        {
+            "role": "engineer",
+            "summary": f"更新了设计，API={api_count}, 表={table_count}",
+            "answers": list(delta.answers or []),
+        },
     ]
 
     return {
@@ -188,11 +272,11 @@ def dialogue_solution_node(state: AgentState) -> dict:
         max_tokens=1200,
     )
 
-    structured_llm = get_structured_llm(PRDDocument, temperature=0.5)
+    structured_llm = get_structured_llm(PRDDocument, temperature=0.5, role="dialogue")
     user_content = DIALOGUE_SOLUTION_PROMPT.format(
         dialogue_questions=q_text,
-        clarified_requirement=json.dumps(clarified_req, ensure_ascii=False, indent=2),
-        current_prd=json.dumps(prd_doc, ensure_ascii=False, indent=2),
+        clarified_requirement=json.dumps(clarified_req, ensure_ascii=False, indent=2, sort_keys=True),
+        current_prd=json.dumps(prd_doc, ensure_ascii=False, indent=2, sort_keys=True),
         task_memory=task_memory_text,
     )
 
@@ -258,19 +342,16 @@ DIALOGUE_REVIEWER_USER_PROMPT = """## 评审摘要
 请针对以上评审结果，生成 2-5 个技术对话问题。"""
 
 ENGINEER_DIALOGUE_SYSTEM_PROMPT = """你是一名资深技术架构师。评审专家向你的技术设计提出了深入的问题。
-请逐一回答每个问题，给出具体、可操作的技术方案，然后基于讨论结果更新完整的技术设计。
+请逐一回答每个问题，给出具体、可操作的技术方案，并只输出需要变更的设计条目。
 
 回答原则：
 - 每个回答必须包含具体的实现细节（代码模式、数据库字段、API 参数等）
-- 如果评审专家的建议合理，接受并融入到更新后的设计中
+- 如果评审专家的建议合理，接受并体现在 api_updates / db_updates 中
+- 只输出发生变化的条目，未改动的端点与表不要重复输出
 - 如果不同意，礼貌地解释你的技术决策理由
 - 更新设计时要保持已有的正确部分，只修改问题涉及的部分"""
 
-DIALOGUE_ENGINEER_PROMPT = """## 评审专家的问题
-
-{dialogue_questions}
-
-## 当前 PRD
+DIALOGUE_ENGINEER_PROMPT = """## 当前 PRD
 {prd_doc}
 
 ## 当前技术设计
@@ -279,7 +360,14 @@ DIALOGUE_ENGINEER_PROMPT = """## 评审专家的问题
 ## 短期记忆
 {task_memory}
 
-请逐一回答问题，然后输出更新后的完整技术设计方案。"""
+## 评审专家的问题
+{dialogue_questions}
+
+请按以下结构输出，不要重写整份设计：
+1. answers：逐条回答每个问题，给出具体的技术方案。
+2. api_updates：只列出需要新增或修改的 API 端点，每条给出完整字段（method / path / description / request_body / response_body / auth_required / related_feature_ids）；未涉及的端点不要输出。
+3. db_updates：只列出需要新增或修改的数据表，每条给出完整字段（table_name / description / columns / indexes / related_feature_ids）；未涉及的表不要输出。
+4. architecture_note：仅在架构层面需要补充或修正时填写，否则留空。"""
 
 SOLUTION_DIALOGUE_SYSTEM_PROMPT = """你是一名资深产品经理。评审专家对你的 PRD 提出了深入的问题。
 请逐一回答每个问题，给出具体的产品逻辑和业务规则，然后更新 PRD 文档。
@@ -289,18 +377,17 @@ SOLUTION_DIALOGUE_SYSTEM_PROMPT = """你是一名资深产品经理。评审专�
 - 接受合理的建议并融入 PRD
 - 保持已有的正确内容"""
 
-DIALOGUE_SOLUTION_PROMPT = """## 评审专家的问题
-
-{dialogue_questions}
-
-## 需求澄清结果
+DIALOGUE_SOLUTION_PROMPT = """## 需求澄清结果
 {clarified_requirement}
-
-## 当前 PRD
-{current_prd}
 
 ## 短期记忆
 {task_memory}
+
+## 评审专家的问题
+{dialogue_questions}
+
+## 当前 PRD（在此基础上更新）
+{current_prd}
 
 请逐一回答问题，然后输出更新后的完整 PRD 文档。"""
 
@@ -375,7 +462,7 @@ def _format_dialogue_history(
 
     # Over threshold: compress old rounds
     try:
-        llm = get_llm(temperature=0.2)
+        llm = get_llm(temperature=0.2, role="dialogue")
     except Exception:
         logger.warning("Failed to get LLM for dialogue compression, falling back to truncation")
         lines = []
@@ -404,9 +491,15 @@ def _parse_questions(messages: list, targets: list[str]) -> list[dict[str, Any]]
     from app.core.llm import get_structured_llm
 
     try:
-        structured_llm = get_structured_llm(DialogueQuestionList, temperature=0.3)
+        structured_llm = get_structured_llm(DialogueQuestionList, temperature=0.3, role="dialogue")
         result: DialogueQuestionList = structured_llm.invoke(messages)
-        questions = [q.model_dump() for q in result.questions]
+        # The model occasionally returns nothing usable; fall back instead of
+        # dereferencing None and failing the whole workflow.
+        questions = [
+            question.model_dump()
+            for question in (getattr(result, "questions", None) or [])
+            if question is not None
+        ]
         if questions:
             return questions
     except Exception:

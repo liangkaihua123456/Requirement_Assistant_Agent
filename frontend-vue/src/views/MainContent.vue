@@ -16,7 +16,7 @@ import { useTaskApi } from '@/composables/useTaskApi'
 import type { TaskListItem } from '@/types'
 
 const router = useRouter()
-const { listTasks } = useTaskApi()
+const { listTasks, getTaskStats } = useTaskApi()
 
 const stats = ref({ total: 0, completed: 0, failed: 0, running: 0 })
 const recentTasks = ref<TaskListItem[]>([])
@@ -27,20 +27,22 @@ const completionRate = computed(() => {
 })
 
 const statCards = computed(() => [
-  { label: '总任务', value: stats.value.total, tone: 'blue', icon: Activity, note: '累计创建' },
-  { label: '已完成', value: stats.value.completed, tone: 'green', icon: CheckCircle2, note: `完成率 ${completionRate.value}%` },
-  { label: '执行中', value: stats.value.running, tone: 'amber', icon: LoaderCircle, note: '实时处理中' },
-  { label: '未达标', value: stats.value.failed, tone: 'red', icon: CircleAlert, note: '建议优先处理' },
+  { label: '总任务', value: stats.value.total, tone: 'blue', icon: Activity, note: '累计创建', target: { name: 'history' } },
+  { label: '已完成', value: stats.value.completed, tone: 'green', icon: CheckCircle2, note: `完成率 ${completionRate.value}%`, target: { name: 'history', query: { status: 'completed' } } },
+  { label: '执行中', value: stats.value.running, tone: 'amber', icon: LoaderCircle, note: '实时处理中', target: { name: 'history', query: { status: 'running' } } },
+  { label: '未达标', value: stats.value.failed, tone: 'red', icon: CircleAlert, note: '建议优先处理', target: { name: 'history', query: { status: 'error' } } },
 ])
 
 onMounted(async () => {
   try {
-    const tasks = await listTasks(20)
-    stats.value.total = tasks.length
-    stats.value.completed = tasks.filter(t => t.status === 'completed').length
-    stats.value.failed = tasks.filter(t => t.status === 'error').length
-    stats.value.running = tasks.filter(t => t.status === 'running').length
-    recentTasks.value = tasks.slice(0, 6)
+    const [counts, tasks] = await Promise.all([getTaskStats(), listTasks(6)])
+    stats.value = {
+      total: counts.total,
+      completed: counts.completed,
+      failed: counts.error,
+      running: counts.running,
+    }
+    recentTasks.value = tasks
   } catch { /* backend may be busy */ }
 })
 
@@ -48,6 +50,8 @@ const statusMeta: Record<string, { label: string; cls: string }> = {
   queued: { label: '排队中', cls: 'tag-info' },
   running: { label: '执行中', cls: 'tag-warning' },
   waiting_human: { label: '待处理', cls: 'tag-warning' },
+  cancelling: { label: '取消中', cls: 'tag-warning' },
+  cancelled: { label: '已取消', cls: 'tag-info' },
   completed: { label: '已完成', cls: 'tag-success' },
   error: { label: '失败', cls: 'tag-danger' },
 }
@@ -69,7 +73,15 @@ const statusMeta: Record<string, { label: string; cls: string }> = {
 
     <!-- Stats Row -->
     <div class="stats-row">
-      <div v-for="s in statCards" :key="s.label" :class="['stat-box', 'card', `tone-${s.tone}`]">
+      <div
+        v-for="s in statCards"
+        :key="s.label"
+        :class="['stat-box', 'card', 'clickable', `tone-${s.tone}`]"
+        role="button"
+        tabindex="0"
+        @click="router.push(s.target)"
+        @keydown.enter="router.push(s.target)"
+      >
         <div class="stat-top">
           <span class="stat-label">{{ s.label }}</span>
           <span class="stat-icon"><component :is="s.icon" :size="18" /></span>
@@ -196,6 +208,17 @@ const statusMeta: Record<string, { label: string; cls: string }> = {
 .stat-num { margin-top: 3px; font-size: 30px; font-weight: 750; letter-spacing: -0.03em; color: var(--text-primary); }
 .stat-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
 .stat-note { font-size: 11px; color: var(--text-muted); }
+.stat-box.clickable {
+  cursor: pointer;
+  transition: transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.stat-box.clickable:hover {
+  transform: translateY(-2px);
+  border-color: #b9cbf7;
+  box-shadow: 0 8px 20px rgba(22, 93, 255, 0.08);
+}
+.stat-box.clickable:active { transform: translateY(0); }
+.stat-box.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .tone-blue { color: var(--accent); }
 .tone-green { color: var(--success); }
 .tone-amber { color: var(--warning); }

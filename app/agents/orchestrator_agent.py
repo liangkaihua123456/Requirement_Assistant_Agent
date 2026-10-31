@@ -10,15 +10,18 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.types import interrupt
 
+from app.core.config import get_settings
 from app.core.llm import get_llm
 from app.core.logger import logger
 from app.core.prompts import INPUT_NORMALIZE_PROMPT
 from app.graph.state import AgentState
+from app.memory.few_shot import resolve_memory_enabled
 from app.storage.repo_memory import save_memory_sync
 from app.memory.consolidation import (
     detect_conflict,
@@ -28,8 +31,29 @@ from app.memory.consolidation import (
 )
 
 
+_ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff]")
+_INLINE_SPACE_RE = re.compile(r"[ \t\u3000]+")
+_BLANK_LINES_RE = re.compile(r"\n{3,}")
+
+
+def normalize_input_text(raw: str, max_chars: int = 8000) -> str:
+    """Rule-based cleanup: keeps semantics, costs no model round-trip."""
+    text = _ZERO_WIDTH_RE.sub("", raw)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _INLINE_SPACE_RE.sub(" ", text)
+    text = "\n".join(line.strip() for line in text.split("\n"))
+    text = _BLANK_LINES_RE.sub("\n\n", text).strip()
+    if max_chars > 0 and len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "\n...[输入已截断]"
+    return text
+
+
 def input_normalize_node(state: AgentState) -> dict:
-    """输入规范化节点：清理和规范化用户输入。"""
+    """输入规范化节点：清理和规范化用户输入。
+
+    默认走规则清洗（0 次 LLM 调用）。需要语义级改写时开启
+    INPUT_NORMALIZE_LLM_ENABLED；LLM 失败自动回退规则清洗。
+    """
     logger.info("Input Normalize 开始执行", extra={"node": "input_normalize"})
 
     raw_input = state.get("user_input", "")
@@ -40,14 +64,22 @@ def input_normalize_node(state: AgentState) -> dict:
             "error_message": "用户输入为空",
         }
 
-    llm = get_llm(temperature=0.1)
-    messages = [
-        HumanMessage(
-            content=INPUT_NORMALIZE_PROMPT.format(raw_input=raw_input)
-        ),
-    ]
-    response = llm.invoke(messages)
-    normalized = response.content.strip()
+    settings = get_settings()
+    normalized = normalize_input_text(raw_input, settings.input_normalize_max_chars)
+    if settings.input_normalize_llm_enabled:
+        try:
+            llm = get_llm(temperature=0.1, role="normalizer")
+            response = llm.invoke(
+                [HumanMessage(content=INPUT_NORMALIZE_PROMPT.format(raw_input=normalized))]
+            )
+            llm_text = (response.content or "").strip()
+            if llm_text:
+                normalized = llm_text
+        except Exception as exc:
+            logger.warning(
+                f"Input normalize LLM failed, using rule-based text: {exc}",
+                extra={"node": "input_normalize"},
+            )
 
     logger.info(
         "Input Normalize 执行完成",
@@ -133,7 +165,7 @@ def human_approval_node(state: AgentState) -> dict:
         extra={"node": "human_approval", "approved": approved},
     )
 
-    return {
+    result = {
         "human_approved": approved,
         "human_feedback": feedback,
         "current_node": "human_approval",
@@ -145,6 +177,13 @@ def human_approval_node(state: AgentState) -> dict:
             }
         ],
     }
+    if not approved:
+        # A rejection is a fresh attempt: restore the automatic repair budget
+        # that previous reflow rounds may have consumed.
+        result["reflow_count"] = 0
+        result["repair_attempted"] = False
+        result["repair_count"] = 0
+    return result
 
 
 def package_output_node(state: AgentState) -> dict:
@@ -194,6 +233,9 @@ def _save_task_to_memory(state: AgentState) -> None:
     review = state.get("review_result") or {}
     # 只保存通过评审且评分达标的产物
     if not review.get("passed", False) or (review.get("overall_score") or 0) < 7:
+        return
+    # 记忆关闭时不写库：写入路径会触发 Chroma 连接、冲突检索与 seed
+    if not resolve_memory_enabled(state.get("metadata") or {}):
         return
 
     task_id = state.get("task_id", "")

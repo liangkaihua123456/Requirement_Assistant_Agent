@@ -18,6 +18,7 @@ from app.graph.router import (
     route_after_reviewer,
     route_after_human_approval,
     route_after_dialogue_reviewer,
+    route_entry,
 )
 from app.agents.orchestrator_agent import (
     input_normalize_node,
@@ -47,7 +48,7 @@ def build_graph(checkpointer: MemorySaver | None = None):
     builder = StateGraph(AgentState)
 
     # ── 注册所有节点 ──────────────────────────────────────────
-    builder.add_node("input_normalize", trace_node("input_normalize")(input_normalize_node))
+    builder.add_node("input_normalize", trace_node("input_normalize", llm_calls=0)(input_normalize_node))
     builder.add_node("planner", trace_node("planner")(planner_node))
     builder.add_node("plan_evaluator", trace_node("plan_evaluator")(plan_evaluator_node))
     builder.add_node("human_clarification", trace_node("human_clarification", llm_calls=0)(human_clarification_node))
@@ -65,7 +66,18 @@ def build_graph(checkpointer: MemorySaver | None = None):
 
     # ── 固定边 ────────────────────────────────────────────────
     # START -> input_normalize -> planner -> plan_evaluator
-    builder.add_edge(START, "input_normalize")
+    # START 支持二次优化入口：携带已有 PRD 时直接从工程阶段继续
+    builder.add_conditional_edges(
+        START,
+        route_entry,
+        {
+            "input_normalize": "input_normalize",
+            "engineer": "engineer",
+            "repairer": "repairer",
+            "reviewer": "reviewer",
+            "solution": "solution",
+        },
+    )
     builder.add_edge("input_normalize", "planner")
     builder.add_edge("planner", "plan_evaluator")
 
