@@ -91,13 +91,41 @@ def engineer_node(state: AgentState) -> dict:
     result_dict: dict = {}
     react_iterations = 0
 
+    compact_retry_used = False
     for react_iterations in range(1, _MAX_REACT_ITERATIONS + 1):
-        result: TechnicalDesign = structured_llm.invoke(messages)
+        result: TechnicalDesign | None = structured_llm.invoke(messages)
         if result is None:
             logger.error("Engineer structured_llm returned None after continuation")
-            if react_iterations == 1:
-                raise RuntimeError("工程节点在达到输出上限并续写后，仍没有得到可解析的技术设计")
-            break
+            if not compact_retry_used:
+                compact_retry_used = True
+                # Start a fresh transcript — appending to the failed long
+                # continuation chat usually reproduces the same overflow.
+                compact_messages = [
+                    SystemMessage(
+                        content=(
+                            ENGINEER_SYSTEM_PROMPT
+                            + "\n\n【强制精简】必须一次输出完整可解析 JSON。"
+                            "api≤10、tables≤6、services≤6、key_files≤5；"
+                            "skeleton 每项≤8 行；relationships/indexes/dependencies "
+                            "一律为字符串数组。"
+                        )
+                    ),
+                    HumanMessage(
+                        content=(
+                            "上次输出过长或类型不合法。请基于以下材料重新输出精简技术设计 JSON：\n"
+                            f"PRD：{json.dumps(prd_doc, ensure_ascii=False)}\n"
+                            f"澄清：{json.dumps(clarified_req, ensure_ascii=False)}\n"
+                            f"{extra_context}\n"
+                            "只输出 JSON，不要 Markdown。"
+                        )
+                    ),
+                ]
+                logger.info("Engineer 使用全新精简对话重试结构化输出", extra={"node": "engineer"})
+                result = structured_llm.invoke(compact_messages)
+            if result is None:
+                if react_iterations == 1:
+                    raise RuntimeError("工程节点在达到输出上限并续写后，仍没有得到可解析的技术设计")
+                break
         result_dict = result.model_dump()
 
         api_coverage = score_api_feature_coverage(prd_doc, result_dict)

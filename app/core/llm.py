@@ -20,13 +20,16 @@ from app.core.config import get_settings
 from app.core.logger import logger
 
 
-def _dashscope_extra_body() -> dict | None:
+def _provider_extra_body() -> dict | None:
+    """Disable thinking modes that conflict with structured tool_choice."""
     settings = get_settings()
     base_url = settings.openai_api_base.lower()
     model_name = settings.openai_model_name.lower()
     thinking_model_prefixes = ("qwen3", "glm-5")
     if "dashscope" in base_url and model_name.startswith(thinking_model_prefixes):
         return {"enable_thinking": False}
+    if "deepseek" in base_url or model_name.startswith("deepseek"):
+        return {"thinking": {"type": "disabled"}}
     return None
 
 
@@ -42,7 +45,7 @@ def get_llm(temperature: float = 0.3) -> ChatOpenAI:
         max_tokens=settings.openai_max_tokens,
         timeout=settings.openai_timeout_seconds,
         max_retries=2,
-        extra_body=_dashscope_extra_body(),
+        extra_body=_provider_extra_body(),
     )
 
 
@@ -57,7 +60,7 @@ def get_creative_llm() -> ChatOpenAI:
         max_tokens=settings.openai_max_tokens,
         timeout=settings.openai_timeout_seconds,
         max_retries=2,
-        extra_body=_dashscope_extra_body(),
+        extra_body=_provider_extra_body(),
     )
 
 
@@ -91,9 +94,23 @@ class _ContinuableStructuredLLM:
             f"partial_chars={len(partial)} max_rounds={self._max_continuations}"
         )
         transcript.append(AIMessage(content=partial))
+        repair_attempts = 0
         for round_index in range(1, self._max_continuations + 1):
             problem = _schema_problem(self._schema, partial)
-            prompt = _continue_prompt(partial) if limited else _repair_prompt(partial, problem)
+            has_object = isinstance(_candidate_object(partial, repair=True), dict)
+            # Valid JSON object that fails schema: at most one repair pass.
+            # Further "continuations" usually corrupt the payload further.
+            if has_object and not limited:
+                if repair_attempts >= 1:
+                    logger.info(
+                        "结构化输出已是完整 JSON 但 schema 不通过，停止续写 "
+                        f"problem={problem[:180]}"
+                    )
+                    break
+                repair_attempts += 1
+                prompt = _repair_prompt(partial, problem)
+            else:
+                prompt = _continue_prompt(partial) if limited else _repair_prompt(partial, problem)
             transcript.append(HumanMessage(content=prompt))
             response = self._llm.invoke(transcript, config, **kwargs)
             piece = _message_text(response)
@@ -101,9 +118,18 @@ class _ContinuableStructuredLLM:
                 logger.warning(f"结构化输出续写第 {round_index} 轮没有返回文本")
                 break
             strict_piece = _parse_schema(self._schema, piece, repair=False)
-            partial = piece if strict_piece is not None else _join_continuation(partial, piece)
+            if strict_piece is not None:
+                return strict_piece
+            # If the model rewrote a full JSON object, prefer it over naive concat.
+            rewritten = _parse_schema(self._schema, piece, repair=True)
+            if rewritten is not None:
+                return rewritten
+            if isinstance(_candidate_object(piece, repair=True), dict) and len(piece) >= len(partial) * 0.6:
+                partial = piece
+            else:
+                partial = _join_continuation(partial, piece)
             limited = _is_length_limited(response)
-            recovered = strict_piece or _parse_schema(self._schema, partial, repair=not limited)
+            recovered = _parse_schema(self._schema, partial, repair=not limited)
             logger.info(
                 "结构化输出续写完成 "
                 f"round={round_index} finish={_finish_reason(response)} chars={len(partial)} "
@@ -247,7 +273,20 @@ def _parse_schema(schema: type[BaseModel], text: str, *, repair: bool = True):
         return None
     try:
         return schema.model_validate(data)
-    except ValidationError:
+    except ValidationError as exc:
+        # One more pass after json-repair may still leave mild type drift;
+        # let schema field validators coerce common list/object mismatches.
+        try:
+            repaired = repair_json(json.dumps(data, ensure_ascii=False), return_objects=True)
+            if isinstance(repaired, dict):
+                return schema.model_validate(repaired)
+        except ValidationError as exc2:
+            logger.info(f"结构化输出 schema 校验失败: {str(exc2)[:240]}")
+            return None
+        except Exception:
+            logger.info(f"结构化输出 schema 校验失败: {str(exc)[:240]}")
+            return None
+        logger.info(f"结构化输出 schema 校验失败: {str(exc)[:240]}")
         return None
 
 

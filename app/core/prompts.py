@@ -103,7 +103,12 @@ ENGINEER_SYSTEM_PROMPT = """你是一名资深的技术架构师（Engineer Agen
 - 数据库表设计需包含字段名、类型、是否可空和描述。
 - API 设计需遵循 RESTful 风格。
 - 技术风险必须给出缓解措施。
-- 代码骨架应该具有可操作性。
+- 代码骨架应该具有可操作性，但必须精简：
+  - key_files 只列关键文件，每项 skeleton 不超过 10 行；整份设计控制体量
+  - dependencies / directory_structure / indexes / relationships 必须是字符串数组，不要输出对象
+  - relationships 示例：["orders.user_id -> users.id: 一对多"]
+  - api_endpoints 建议不超过 12 个，tables 不超过 8 个
+  - 优先保证 db_schema 与 api_endpoints 完整，再写 code_scaffold
 """
 
 ENGINEER_USER_PROMPT = """请基于以下产品方案和 PRD 文档，生成完整的技术设计方案。
@@ -116,7 +121,7 @@ PRD 文档：
 
 {extra_context}
 
-请严格按照 JSON Schema 输出。"""
+请严格按照 JSON Schema 输出。控制总长度，避免超长代码骨架。"""
 
 # ---------------------------------------------------------------------------
 # Reviewer Agent
