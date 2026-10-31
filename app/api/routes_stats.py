@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from app.api.deps import get_current_user
 
 from app.storage import repo_usage
 
-router = APIRouter(prefix="/stats", tags=["stats"])
+router = APIRouter(prefix="/stats", tags=["stats"], dependencies=[Depends(get_current_user)])
 
 
 @router.get("/usage")

@@ -10,7 +10,8 @@ from __future__ import annotations
 import asyncio
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from app.api.deps import get_current_user
 from pydantic import BaseModel, Field
 
 from app.core import pricing_sync
@@ -21,7 +22,7 @@ from app.core.pricing_store import get_meta, get_models_raw, get_pricing, save a
 from app.core.routing_store import get_overrides, mask_key, save_overrides
 from app.tools.cost_recalc import recalc_all_costs
 
-router = APIRouter(prefix="/settings", tags=["settings"])
+router = APIRouter(prefix="/settings", tags=["settings"], dependencies=[Depends(get_current_user)])
 
 ROLE_LABELS = {
     "planner": "需求分析",

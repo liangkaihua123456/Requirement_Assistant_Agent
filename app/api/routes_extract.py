@@ -7,14 +7,15 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from app.api.deps import get_current_user
 
 from app.core.config import get_settings
 from app.core.logger import logger
 from app.vision import extract_requirement_from_image, extractor_status
 from app.vision.preprocess import ImageRejected, prepare_image
 
-router = APIRouter(prefix="/extract", tags=["extract"])
+router = APIRouter(prefix="/extract", tags=["extract"], dependencies=[Depends(get_current_user)])
 
 CHUNK_SIZE = 64 * 1024
 

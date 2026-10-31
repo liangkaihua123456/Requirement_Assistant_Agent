@@ -89,14 +89,13 @@ async def list_tasks(limit: int = 50, offset: int = 0, user_id: int | None = Non
         return [_task_summary(r) for r in records]
 
 
-async def count_tasks_by_status() -> dict[str, int]:
-    """按状态统计任务数，供仪表盘使用。"""
+async def count_tasks_by_status(user_id: int | None = None) -> dict[str, int]:
+    """按状态统计任务数，供仪表盘使用（user_id 提供时按用户隔离）。"""
     async with get_db_session() as session:
-        rows = (
-            await session.execute(
-                select(TaskRecord.status, func.count()).group_by(TaskRecord.status)
-            )
-        ).all()
+        stmt = select(TaskRecord.status, func.count()).group_by(TaskRecord.status)
+        if user_id is not None:
+            stmt = stmt.where(TaskRecord.user_id == user_id)
+        rows = (await session.execute(stmt)).all()
     return {str(status): int(count) for status, count in rows}
 
 
@@ -105,10 +104,13 @@ async def list_tasks_page(
     offset: int = 0,
     status: str | None = None,
     q: str | None = None,
+    user_id: int | None = None,
 ) -> dict:
-    """服务端分页，支持状态过滤与关键词搜索，返回当前页与总数。"""
+    """服务端分页，支持状态过滤与关键词搜索，返回当前页与总数（可按用户隔离）。"""
     async with get_db_session() as session:
         conditions = []
+        if user_id is not None:
+            conditions.append(TaskRecord.user_id == user_id)
         if status and status != "all":
             conditions.append(TaskRecord.status == status)
         if q:
@@ -147,9 +149,9 @@ async def delete_task(task_id: str) -> bool:
 
 
 async def list_expired_tasks(
-    cutoff: datetime, statuses: list[str], limit: int = 200
+    cutoff: datetime, statuses: list[str], limit: int = 200, user_id: int | None = None
 ) -> list[str]:
-    """列出早于 cutoff 且处于终态的任务 ID，用于归档清理。"""
+    """列出早于 cutoff 且处于终态的任务 ID，用于归档清理（可按用户隔离）。"""
     async with get_db_session() as session:
         stmt = (
             select(TaskRecord.task_id)
@@ -160,6 +162,8 @@ async def list_expired_tasks(
             .order_by(TaskRecord.created_at.asc())
             .limit(limit)
         )
+        if user_id is not None:
+            stmt = stmt.where(TaskRecord.user_id == user_id)
         rows = (await session.execute(stmt)).scalars().all()
     return list(rows)
 

@@ -118,9 +118,9 @@ async def create_task(req: CreateTaskRequest, current_user: dict = Depends(get_c
 
 
 @router.get("/stats")
-async def get_task_stats():
+async def get_task_stats(current_user: dict = Depends(get_current_user)):
     """按状态聚合任务数，避免列表页截断导致统计失真。"""
-    counts = await repo_task.count_tasks_by_status()
+    counts = await repo_task.count_tasks_by_status(user_id=current_user["id"])
     return {
         "total": sum(counts.values()),
         "by_status": counts,
@@ -138,11 +138,12 @@ async def list_tasks_page(
     offset: int = 0,
     status: str | None = None,
     q: str | None = None,
+    current_user: dict = Depends(get_current_user),
 ):
     """服务端分页列表，支持状态过滤与关键词搜索。"""
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
-    return await repo_task.list_tasks_page(limit=limit, offset=offset, status=status, q=q)
+    return await repo_task.list_tasks_page(limit=limit, offset=offset, status=status, q=q, user_id=current_user["id"])
 
 
 @router.get("/{task_id}", response_model=TaskStatusResponse)
@@ -243,9 +244,9 @@ async def submit_feedback(task_id: str, req: FeedbackRequest, current_user: dict
 
 
 @router.post("/{task_id}/reoptimize")
-async def reoptimize_task(task_id: str):
+async def reoptimize_task(task_id: str, current_user: dict = Depends(get_current_user)):
     """基于已有 PRD 重新执行工程与评审，生成一个新任务。"""
-    original = await repo_task.get_task(task_id)
+    original = _ensure_owner(await repo_task.get_task(task_id), current_user["id"])
     if original is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -258,7 +259,7 @@ async def reoptimize_task(task_id: str):
     if review.get("passed"):
         raise HTTPException(status_code=400, detail="任务已通过评审，无需二次优化")
 
-    new_task_id = await repo_task.create_task(original["user_input"])
+    new_task_id = await repo_task.create_task(original["user_input"], user_id=current_user["id"])
     design = snapshot.get("technical_design") or {}
     mode = "repair" if design else "rebuild"
 
@@ -287,9 +288,9 @@ async def reoptimize_task(task_id: str):
 
 
 @router.post("/{task_id}/retry")
-async def retry_task(task_id: str):
+async def retry_task(task_id: str, current_user: dict = Depends(get_current_user)):
     """从失败节点继续执行，不新建任务。"""
-    task = await repo_task.get_task(task_id)
+    task = _ensure_owner(await repo_task.get_task(task_id), current_user["id"])
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     if task["status"] != "error":
@@ -311,7 +312,7 @@ async def retry_task(task_id: str):
 
 
 @router.post("/cleanup")
-async def cleanup_tasks(days: int = 30, dry_run: bool = True, limit: int = 200):
+async def cleanup_tasks(days: int = 30, dry_run: bool = True, limit: int = 200, current_user: dict = Depends(get_current_user)):
     """清理 N 天前的终态任务（记录 + checkpoint + 导出目录）。
 
     默认 dry_run，只返回候选数量与样例，避免误删。
@@ -321,7 +322,7 @@ async def cleanup_tasks(days: int = 30, dry_run: bool = True, limit: int = 200):
 
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
     task_ids = await repo_task.list_expired_tasks(
-        cutoff, ["completed", "error", "cancelled"], limit
+        cutoff, ["completed", "error", "cancelled"], limit, user_id=current_user["id"]
     )
     if dry_run:
         return {
@@ -352,9 +353,9 @@ async def cleanup_tasks(days: int = 30, dry_run: bool = True, limit: int = 200):
 
 
 @router.post("/{task_id}/cancel")
-async def cancel_task(task_id: str):
+async def cancel_task(task_id: str, current_user: dict = Depends(get_current_user)):
     """请求取消任务：排队中直接终止，执行中在当前节点结束后终止。"""
-    task = await repo_task.get_task(task_id)
+    task = _ensure_owner(await repo_task.get_task(task_id), current_user["id"])
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -373,9 +374,9 @@ async def cancel_task(task_id: str):
 
 
 @router.delete("/{task_id}")
-async def delete_task(task_id: str):
+async def delete_task(task_id: str, current_user: dict = Depends(get_current_user)):
     """删除任务记录、checkpoint 与导出目录。"""
-    task = await repo_task.get_task(task_id)
+    task = _ensure_owner(await repo_task.get_task(task_id), current_user["id"])
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     if task["status"] in ("queued", "running", "cancelling"):
@@ -394,8 +395,8 @@ async def delete_task(task_id: str):
 
 
 @router.get("/{task_id}/export/zip")
-async def export_task_zip(task_id: str):
-    task = await repo_task.get_task(task_id)
+async def export_task_zip(task_id: str, current_user: dict = Depends(get_current_user)):
+    task = _ensure_owner(await repo_task.get_task(task_id), current_user["id"])
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     if task["status"] != "completed" or not task.get("result"):
@@ -411,8 +412,8 @@ async def export_task_zip(task_id: str):
 
 
 @router.get("/{task_id}/export/docx")
-async def export_task_docx(task_id: str):
-    task = await repo_task.get_task(task_id)
+async def export_task_docx(task_id: str, current_user: dict = Depends(get_current_user)):
+    task = _ensure_owner(await repo_task.get_task(task_id), current_user["id"])
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     if task["status"] != "completed" or not task.get("result"):
@@ -429,9 +430,9 @@ async def export_task_docx(task_id: str):
 
 
 @router.get("/{task_id}/traceability")
-async def get_task_traceability(task_id: str):
+async def get_task_traceability(task_id: str, current_user: dict = Depends(get_current_user)):
     """Feature-to-artifact matrix for the task detail page."""
-    task = await repo_task.get_task(task_id)
+    task = _ensure_owner(await repo_task.get_task(task_id), current_user["id"])
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
