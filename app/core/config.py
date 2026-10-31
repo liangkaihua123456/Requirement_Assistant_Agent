@@ -170,6 +170,10 @@ class Settings(BaseModel):
     refresh_token_expire_days: int = Field(
         default_factory=lambda: int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
     )
+    # 启动时种子演示账号 admin/admin；发布版请置 false
+    demo_admin_enabled: bool = Field(
+        default_factory=lambda: os.getenv("DEMO_ADMIN_ENABLED", "true").lower() == "true"
+    )
 
     # App
     app_env: str = Field(default_factory=lambda: os.getenv("APP_ENV", "development"))

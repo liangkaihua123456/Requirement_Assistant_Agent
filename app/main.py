@@ -16,10 +16,12 @@ from app.api.routes_template import router as template_router
 from app.api.routes_stream import router as stream_router
 from app.api.routes_extract import router as extract_router
 from app.core import pricing_sync
+from app.core.config import get_settings
 from app.core.logger import logger
 from app.core.model_router import routing_summary
 from app.core.task_queue import start_worker, stop_worker
 from app.storage.db import init_db
+from app.storage.repo_user import ensure_demo_admin
 
 PRICE_SYNC_INTERVAL_SECONDS = 3600
 
@@ -38,6 +40,8 @@ async def _price_sync_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    if get_settings().demo_admin_enabled:
+        await ensure_demo_admin()  # 演示账号 admin/admin
     # 早期价格同步把 DeepSeek 的人民币数值标成了 USD，启动时清掉，回落到内置价
     try:
         from app.core.pricing_store import migrate_deepseek_currency

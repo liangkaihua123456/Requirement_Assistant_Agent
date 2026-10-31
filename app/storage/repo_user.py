@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from app.core.security import hash_reset_token
+from app.core.security import hash_password, hash_reset_token, verify_password
 from app.storage.db import PasswordResetTokenRecord, UserRecord, get_db_session
 
 
@@ -65,6 +65,26 @@ async def update_password(user_id: int, password_hash: str) -> None:
         if record is not None:
             record.password_hash = password_hash
             await session.commit()
+
+
+# ---------- 演示账号 ----------
+DEMO_USERNAME = "admin"
+DEMO_PASSWORD = "admin"  # 仅演示用途，写死为 admin/admin
+
+
+async def ensure_demo_admin() -> dict:
+    """确保演示账号 admin/admin 可用（写死演示密码）。
+
+    - 无 admin 用户 → 创建；
+    - 已存在但密码不是 admin → 重置为 admin（演示语义，保证 demo 永远进得来）。
+    仅供本地演示；生产部署请设置 DEMO_ADMIN_ENABLED=false 关闭。
+    """
+    existing = await get_by_username(DEMO_USERNAME)
+    if existing is None:
+        return await create_user(DEMO_USERNAME, hash_password(DEMO_PASSWORD), email=None)
+    if not verify_password(DEMO_PASSWORD, existing["password_hash"]):
+        await update_password(existing["id"], hash_password(DEMO_PASSWORD))
+    return existing
 
 
 # ---------- 密码重置 token ----------
