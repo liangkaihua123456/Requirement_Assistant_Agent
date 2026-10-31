@@ -42,7 +42,10 @@ def reviewer_node(state: AgentState) -> dict:
         state.get("task_memory"),
         max_chars=get_settings().short_term_memory_max_chars,
     )
-    few_shot_text = build_few_shot_for_task(prd_doc, clarified_req, metadata=metadata)
+    few_shot_text = build_few_shot_for_task(
+        prd_doc, clarified_req, metadata=metadata,
+        project_id=str(state.get("project_id") or "default"),
+    )
     previous_issues = (state.get("review_result") or {}).get("issues") or []
     messages = [
         SystemMessage(content=REVIEWER_SYSTEM_PROMPT),

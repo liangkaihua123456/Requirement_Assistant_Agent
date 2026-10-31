@@ -12,10 +12,11 @@ def search_memory_sync(
     query: str,
     top_k: int = 3,
     memory_types: list[str] | None = None,
+    project_id: str = "default",
 ) -> list[dict[str, Any]]:
     """Search local memory and return content, metadata, score, and source."""
     try:
-        results = get_memory_store().search(
+        results = get_memory_store(project_id).search(
             query=query,
             top_k=top_k,
             memory_types=memory_types,
@@ -40,12 +41,13 @@ def save_memory_sync(
     content: str,
     metadata: dict[str, Any] | None = None,
     memory_id: str | None = None,
+    project_id: str = "default",
 ) -> None:
-    """Save a memory item to ChromaDB when available."""
+    """Save a memory item to the project's ChromaDB store when available."""
     if not content.strip():
         return
     try:
-        get_memory_store().save(content=content, metadata=metadata, memory_id=memory_id)
+        get_memory_store(project_id).save(content=content, metadata=metadata, memory_id=memory_id)
         logger.info(f"Memory save completed: content={content[:80]}")
     except Exception as exc:  # pragma: no cover
         logger.warning(f"Memory save failed, continuing without persistence: {exc}")

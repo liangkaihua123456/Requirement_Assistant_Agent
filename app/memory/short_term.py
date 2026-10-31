@@ -46,7 +46,8 @@ def format_for_prompt(
 ) -> str:
     """Format task_memory entries as a compact prompt block.
 
-    - Most recent entries (by list position) are shown first.
+    - 渲染顺序为「最新在前」；超出 max_chars 时从头截断，即优先保留最新记忆
+      （reflow 最依赖上一轮评审意见，旧实现会把最新条目截掉，已修复）。
     - Duplicate entries for the same node+iteration are kept only once (last wins).
     - When max_tokens is provided, uses token-aware truncation; otherwise falls back
       to character-based truncation with max_chars.
@@ -63,7 +64,7 @@ def format_for_prompt(
             continue
         seen.add(key)
         deduped.append(entry)
-    deduped.reverse()
+    # 保持 newest-first：截断时保留头部 = 保留最新记忆
 
     if not deduped:
         return ""

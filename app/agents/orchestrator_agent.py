@@ -23,6 +23,7 @@ from app.core.prompts import INPUT_NORMALIZE_PROMPT
 from app.graph.state import AgentState
 from app.memory.few_shot import resolve_memory_enabled
 from app.storage.repo_memory import save_memory_sync
+from app.storage.repo_project_memory import save_memory_archive
 from app.memory.consolidation import (
     detect_conflict,
     increment_task_counter,
@@ -239,6 +240,7 @@ def _save_task_to_memory(state: AgentState) -> None:
         return
 
     task_id = state.get("task_id", "")
+    project_id = str(state.get("project_id") or (state.get("metadata") or {}).get("project_id") or "default")
     prd = state.get("prd_doc") or {}
     design = state.get("technical_design") or {}
     clarified_req = state.get("clarified_requirement") or {}
@@ -274,6 +276,7 @@ def _save_task_to_memory(state: AgentState) -> None:
             "tags": tags,
         },
         memory_id=f"case_{task_id}",
+        project_id=project_id,
     )
 
     # 2. 写入 architecture_pattern：架构关键决策摘要
@@ -295,6 +298,7 @@ def _save_task_to_memory(state: AgentState) -> None:
                 "tags": tags,
             },
             memory_id=f"arch_{task_id}",
+        project_id=project_id,
         )
 
     # 3. 写入 review：评审摘要
@@ -328,10 +332,11 @@ def _save_task_to_memory(state: AgentState) -> None:
             "tags": tags,
         },
         memory_id=f"review_{task_id}",
+        project_id=project_id,
     )
 
     # 4. 检查是否需要触发记忆巩固
-    _maybe_consolidate(domain)
+    _maybe_consolidate(domain, project_id)
 
     logger.info(
         "Memory 写入完成",
@@ -343,9 +348,10 @@ def _checked_save(
     content: str,
     metadata: dict,
     memory_id: str,
+    project_id: str = "default",
 ) -> None:
-    """写入 memory，写入前进行冲突检测。"""
-    conflict = detect_conflict(content, metadata)
+    """写入 memory（冲突检测 → 项目 Chroma store + SQLite 归档双写）。"""
+    conflict = detect_conflict(content, metadata, project_id=project_id)
     if conflict and conflict.get("verdict") == "confirms":
         logger.info(
             "Memory write skipped (confirms existing)",
@@ -357,18 +363,31 @@ def _checked_save(
         metadata["conflict_reason"] = conflict.get("reason", "")[:200]
         if conflict.get("conflict_point"):
             metadata["conflict_point"] = conflict["conflict_point"][:200]
-    save_memory_sync(content=content, metadata=metadata, memory_id=memory_id)
+    metadata.setdefault("project_id", project_id)
+    save_memory_sync(content=content, metadata=metadata, memory_id=memory_id, project_id=project_id)
+    # SQLite 结构化归档：向量库之外保证"事实查得清"，且可按 key 幂等重放
+    save_memory_archive(
+        project_id=project_id,
+        memory_key=memory_id,
+        memory_type=str(metadata.get("memory_type", "case")),
+        task_id=str(metadata.get("task_id", "")),
+        domain=str(metadata.get("domain", "")),
+        product_name=str(metadata.get("product_name", "")),
+        overall_score=metadata.get("overall_score"),
+        content=content,
+        meta=metadata,
+    )
 
 
-def _maybe_consolidate(domain: str) -> None:
-    """任务计数 + 条件触发记忆巩固。"""
-    count = increment_task_counter()
-    if should_consolidate():
+def _maybe_consolidate(domain: str, project_id: str = "default") -> None:
+    """任务计数 + 条件触发记忆巩固（按项目计数、按项目巩固）。"""
+    count = increment_task_counter(project_id)
+    if should_consolidate(project_id):
         logger.info(
             "触发记忆巩固",
             extra={"node": "package_output", "task_count": count, "domain": domain},
         )
-        result = consolidate_memories(domain=domain or None)
+        result = consolidate_memories(domain=domain or None, project_id=project_id)
         logger.info(
             "记忆巩固结果",
             extra={"node": "package_output", "result": result},

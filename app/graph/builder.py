@@ -8,7 +8,7 @@ START -> input_normalize -> planner -> [route] -> solution -> engineer
 from __future__ import annotations
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from app.core.observability import trace_node
 from app.graph.checkpoints import get_checkpointer
@@ -39,7 +39,7 @@ from app.agents.repairer_agent import repairer_node
 from app.agents.plan_evaluator_agent import plan_evaluator_node
 
 
-def build_graph(checkpointer: MemorySaver | None = None):
+def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     """构建并编译 LangGraph 工作流。
 
     Returns:

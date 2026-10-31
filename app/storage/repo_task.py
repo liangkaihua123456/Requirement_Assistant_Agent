@@ -11,14 +11,15 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from app.storage.db import TaskRecord, FeedbackRecord, get_db_session
 
 
-async def create_task(user_input: str, user_id: int | None = None) -> str:
-    """创建新任务，返回 task_id。"""
+async def create_task(user_input: str, user_id: int | None = None, project_id: str = "default") -> str:
+    """创建新任务，返回 task_id。project_id 决定跨任务长期记忆归属哪个 store。"""
     task_id = str(uuid.uuid4())[:8]
     async with get_db_session() as session:
         record = TaskRecord(
             task_id=task_id,
             user_input=user_input,
             user_id=user_id,
+            project_id=project_id or "default",
             status="created",
         )
         session.add(record)
@@ -37,6 +38,7 @@ async def get_task(task_id: str) -> dict | None:
         return {
             "task_id": record.task_id,
             "user_id": record.user_id,
+            "project_id": record.project_id or "default",
             "user_input": record.user_input,
             "status": record.status,
             "current_node": record.current_node,

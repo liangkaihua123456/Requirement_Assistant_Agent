@@ -73,37 +73,38 @@ CONFLICT_DETECTION_PROMPT = """比较以下新经验与已存储的记忆，判�
 
 # ── Trigger management ─────────────────────────────────────────
 
-def _counter_path():
-    return get_settings().data_dir / ".consolidation_counter"
+def _counter_path(project_id: str = "default"):
+    safe = "".join(ch for ch in (project_id or "default") if ch.isalnum() or ch in "_-")[:48]
+    return get_settings().data_dir / f".consolidation_counter_{safe or 'default'}"
 
 
-def increment_task_counter() -> int:
-    path = _counter_path()
+def increment_task_counter(project_id: str = "default") -> int:
+    path = _counter_path(project_id)
     count = int(path.read_text().strip() or "0") if path.exists() else 0
     count += 1
     path.write_text(str(count))
     return count
 
 
-def should_consolidate() -> bool:
+def should_consolidate(project_id: str = "default") -> bool:
     settings = get_settings()
     if not settings.memory_consolidation_enabled:
         return False
-    path = _counter_path()
+    path = _counter_path(project_id)
     if not path.exists():
         return False
     count = int(path.read_text().strip() or "0")
     return count >= settings.memory_consolidation_trigger_count
 
 
-def reset_consolidation_counter() -> None:
-    _counter_path().write_text("0")
+def reset_consolidation_counter(project_id: str = "default") -> None:
+    _counter_path(project_id).write_text("0")
 
 
 # ── Conflict Detection ────────────────────────────────────────
 
-def detect_conflict(new_content: str, new_metadata: dict) -> dict | None:
-    """Check new memory against existing memories before writing.
+def detect_conflict(new_content: str, new_metadata: dict, project_id: str = "default") -> dict | None:
+    """Check new memory against existing memories in the project store before writing.
 
     Returns a conflict info dict if contradiction/supersede detected,
     or None if the new memory is safe to write as-is.
@@ -111,7 +112,7 @@ def detect_conflict(new_content: str, new_metadata: dict) -> dict | None:
     settings = get_settings()
     mem_type = new_metadata.get("memory_type", "case")
 
-    existing = get_memory_store().search(
+    existing = get_memory_store(project_id).search(
         query=new_content,
         top_k=3,
         memory_types=[mem_type],
@@ -154,13 +155,13 @@ def detect_conflict(new_content: str, new_metadata: dict) -> dict | None:
 
 # ── Memory Consolidation ──────────────────────────────────────
 
-def consolidate_memories(domain: str | None = None) -> dict:
+def consolidate_memories(domain: str | None = None, project_id: str = "default") -> dict:
     """Run LLM-driven memory consolidation.
 
     Fetches non-obsolete memories, asks the LLM to merge/abstract/resolve,
     and applies the plan back to the store.
     """
-    store = get_memory_store()
+    store = get_memory_store(project_id)
     settings = get_settings()
 
     all_memories = store.list_all(domain=domain, limit=50)
@@ -197,8 +198,8 @@ def consolidate_memories(domain: str | None = None) -> dict:
         logger.warning("Consolidation LLM call failed", extra={"error": str(exc)[:300]})
         return {"status": "error", "reason": str(exc)[:200]}
 
-    result = _apply_plan(plan)
-    reset_consolidation_counter()
+    result = _apply_plan(plan, project_id)
+    reset_consolidation_counter(project_id)
 
     logger.info(
         "Memory consolidation complete",
@@ -212,9 +213,9 @@ def consolidate_memories(domain: str | None = None) -> dict:
     return result
 
 
-def _apply_plan(plan: dict) -> dict:
+def _apply_plan(plan: dict, project_id: str = "default") -> dict:
     """Execute the consolidation plan: merge, add principles, mark obsolete."""
-    store = get_memory_store()
+    store = get_memory_store(project_id)
     result = {"merged_count": 0, "principles_count": 0, "conflicts_count": 0, "obsolete_count": 0}
 
     default_domain = ""
@@ -229,6 +230,7 @@ def _apply_plan(plan: dict) -> dict:
         store.save(
             content=new_content,
             metadata={
+                "project_id": project_id,
                 "memory_type": item.get("memory_type", "architecture_pattern"),
                 "domain": default_domain,
                 "source": "consolidation",
@@ -249,6 +251,7 @@ def _apply_plan(plan: dict) -> dict:
         store.save(
             content=content,
             metadata={
+                "project_id": project_id,
                 "memory_type": "architecture_principle",
                 "domain": default_domain,
                 "source": "consolidation",

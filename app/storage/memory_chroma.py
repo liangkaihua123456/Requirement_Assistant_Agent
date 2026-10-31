@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import threading
 import uuid
 from dataclasses import dataclass
@@ -111,12 +112,14 @@ class ChromaMemoryStore:
 
     def __init__(
         self,
+        project_id: str = "default",
         persist_dir: Path | None = None,
-        collection_name: str = "multi_agent_memory_semantic",
+        collection_name: str | None = None,
     ) -> None:
         settings = get_settings()
+        self.project_id = (project_id or "default").strip() or "default"
         self.persist_dir = Path(persist_dir or settings.memory_persist_dir)
-        self.collection_name = collection_name
+        self.collection_name = collection_name or _collection_name_for(self.project_id)
         self.embedding_function = DashScopeEmbeddingFunction(
             model=settings.memory_embedding_model,
             dimensions=settings.memory_embedding_dimensions,
@@ -354,13 +357,29 @@ class ChromaMemoryStore:
         ]
 
 
-def get_memory_store() -> ChromaMemoryStore:
-    global _MEMORY_STORE
-    try:
-        return _MEMORY_STORE
-    except NameError:
-        _MEMORY_STORE = ChromaMemoryStore()
-        return _MEMORY_STORE
+def _collection_name_for(project_id: str) -> str:
+    safe = re.sub(r"[^0-9a-zA-Z_\-]+", "_", (project_id or "default").strip().lower())
+    return f"agent_memory_{safe[:60] or 'default'}"
+
+
+def get_memory_store(project_id: str = "default") -> ChromaMemoryStore:
+    """每项目一个 Chroma collection（物理隔离）；带锁的进程级注册表。"""
+    key = (project_id or "default").strip() or "default"
+    with _STORES_LOCK:
+        store = _MEMORY_STORES.get(key)
+        if store is None:
+            store = ChromaMemoryStore(project_id=key)
+            _MEMORY_STORES[key] = store
+        return store
+
+
+def reset_memory_stores_for_tests() -> None:
+    with _STORES_LOCK:
+        _MEMORY_STORES.clear()
+
+
+_STORES_LOCK = threading.Lock()
+_MEMORY_STORES: dict[str, ChromaMemoryStore] = {}
 
 
 def seed_memory_items() -> list[dict[str, Any]]:

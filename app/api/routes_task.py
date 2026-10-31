@@ -36,6 +36,7 @@ def _ensure_owner(task: dict | None, user_id: int) -> dict:
 
 class CreateTaskRequest(BaseModel):
     user_input: str = Field(..., min_length=1, description="User requirement")
+    project: str | None = Field(None, max_length=64, description="所属项目，长期记忆按项目隔离，默认 default")
 
 
 class CreateTaskResponse(BaseModel):
@@ -78,10 +79,12 @@ async def list_tasks_endpoint(
 async def create_task(req: CreateTaskRequest, current_user: dict = Depends(get_current_user)):
     """Create a task quickly and run the graph in the background."""
     started = time.perf_counter()
-    task_id = await repo_task.create_task(req.user_input, user_id=current_user["id"])
+    project_id = (req.project or "default").strip() or "default"
+    task_id = await repo_task.create_task(req.user_input, user_id=current_user["id"], project_id=project_id)
     initial_state = {
         "user_input": req.user_input,
         "task_id": task_id,
+        "project_id": project_id,
         "max_reflow_count": 2,
         "metadata": {
             "task_id": task_id,
@@ -259,13 +262,16 @@ async def reoptimize_task(task_id: str, current_user: dict = Depends(get_current
     if review.get("passed"):
         raise HTTPException(status_code=400, detail="任务已通过评审，无需二次优化")
 
-    new_task_id = await repo_task.create_task(original["user_input"], user_id=current_user["id"])
+    new_task_id = await repo_task.create_task(
+        original["user_input"], user_id=current_user["id"], project_id=original.get("project_id") or "default"
+    )
     design = snapshot.get("technical_design") or {}
     mode = "repair" if design else "rebuild"
 
     initial_state = {
         "user_input": original["user_input"],
         "task_id": new_task_id,
+        "project_id": original.get("project_id") or "default",
         "max_reflow_count": get_settings().max_reflow_count,
         "reflow_count": 0,
         "repair_count": 0,

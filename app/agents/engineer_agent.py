@@ -75,7 +75,10 @@ def engineer_node(state: AgentState) -> dict:
         max_chars=get_settings().short_term_memory_max_chars,
     )
 
-    few_shot_text = build_few_shot_for_task(prd_doc, clarified_req, metadata=metadata)
+    few_shot_text = build_few_shot_for_task(
+        prd_doc, clarified_req, metadata=metadata,
+        project_id=str(state.get("project_id") or "default"),
+    )
 
     messages = [
         SystemMessage(content=ENGINEER_SYSTEM_PROMPT),

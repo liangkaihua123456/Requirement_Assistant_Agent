@@ -30,6 +30,7 @@ class TaskRecord(Base):
     task_id = Column(String(64), unique=True, nullable=False, index=True)
     user_input = Column(Text, nullable=False)
     user_id = Column(Integer, index=True, nullable=True)
+    project_id = Column(String(64), default="default", index=True)
     status = Column(String(32), nullable=False, default="created")
     current_node = Column(String(64), default="")
     state_snapshot = Column(Text, default="{}")
@@ -88,6 +89,29 @@ class TemplateRecord(Base):
     name = Column(String(80), nullable=False)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class ProjectMemoryRecord(Base):
+    """长期记忆结构化归档 —— 与项目 Chroma 向量库配套的可查询账本。
+
+    Chroma 负责"语义找得到"，这张表负责"事实查得清"：按项目/类型/分数过滤、
+    审计追溯，也是日后重建向量库的数据源。memory_key 唯一约束保证蒸馏幂等。
+    """
+
+    __tablename__ = "project_memory"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_id = Column(String(64), default="default", index=True)
+    memory_key = Column(String(128), nullable=False, unique=True, index=True)
+    memory_type = Column(String(32), default="case", index=True)
+    task_id = Column(String(64), default="", index=True)
+    domain = Column(String(64), default="")
+    product_name = Column(String(128), default="")
+    overall_score = Column(Float, nullable=True)
+    content = Column(Text, nullable=False)
+    meta_json = Column(Text, default="{}")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class LlmUsageRecord(Base):
@@ -160,6 +184,9 @@ def _ensure_columns(sync_conn) -> None:
         if "user_id" not in cols:
             sync_conn.execute(text("ALTER TABLE tasks ADD COLUMN user_id INTEGER"))
             sync_conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_user_id ON tasks (user_id)"))
+        if "project_id" not in cols:
+            sync_conn.execute(text("ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT 'default'"))
+            sync_conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_project_id ON tasks (project_id)"))
 
 
 async def init_db():

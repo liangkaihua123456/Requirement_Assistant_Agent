@@ -75,3 +75,4 @@ class AgentState(TypedDict, total=False):
     execution_logs: Annotated[list[dict], _append_list]
     metadata: Annotated[dict, _replace]
     task_id: Annotated[str, _replace]
+    project_id: Annotated[str, _replace]  # 跨任务长期记忆按项目隔离（默认 default）

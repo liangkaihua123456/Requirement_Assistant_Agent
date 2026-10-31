@@ -28,6 +28,7 @@ def retrieve_few_shot_examples(
     top_k: int | None = None,
     memory_types: list[str] | None = None,
     enabled: bool | None = None,
+    project_id: str = "default",
 ) -> list[dict]:
     """Retrieve high-quality cases from ChromaDB for few-shot use.
 
@@ -51,6 +52,7 @@ def retrieve_few_shot_examples(
         query=query,
         top_k=max(1, top_k * 3),
         memory_types=memory_types,
+        project_id=project_id,
     )
 
     min_score = settings.few_shot_min_score
@@ -160,6 +162,7 @@ def build_few_shot_for_task(
     max_chars: int | None = None,
     metadata: dict | None = None,
     enabled: bool | None = None,
+    project_id: str = "default",
 ) -> str:
     """One-stop: build few-shot text from task context.
 
@@ -182,7 +185,7 @@ def build_few_shot_for_task(
     top_k = top_k if top_k is not None else settings.few_shot_top_k
     max_chars = max_chars if max_chars is not None else settings.few_shot_max_chars
 
-    cases = retrieve_few_shot_examples(query, top_k=top_k, enabled=True)
+    cases = retrieve_few_shot_examples(query, top_k=top_k, enabled=True, project_id=project_id)
     return format_few_shot(cases, max_chars=max_chars)
 
 

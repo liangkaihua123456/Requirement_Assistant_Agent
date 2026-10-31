@@ -54,7 +54,8 @@ def solution_node(state: AgentState) -> dict:
     )
 
     few_shot_text = build_few_shot_for_task(
-        prd_doc={}, clarified_req=clarified_req, metadata=metadata
+        prd_doc={}, clarified_req=clarified_req, metadata=metadata,
+        project_id=str(state.get("project_id") or "default"),
     )
 
     messages = [

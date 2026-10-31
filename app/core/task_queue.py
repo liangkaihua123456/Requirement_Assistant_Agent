@@ -16,7 +16,7 @@ from app.core.errors import classify_error
 from app.core.logger import logger
 from app.core.observability import merge_task_metric, utc_now_iso
 from app.graph.builder import get_graph
-from app.graph.checkpoints import has_checkpoint
+from app.graph.checkpoints import get_checkpointer, has_checkpoint
 from app.storage import repo_task
 
 
@@ -332,6 +332,11 @@ async def _run_job(job: WorkflowJob) -> None:
     )
     if status == "completed":
         await repo_task.update_task(job.task_id, result=state_snapshot)
+        # 短期记忆生命周期：终态回收 checkpoint（产物已归档 tasks.result + project_memory）
+        try:
+            get_checkpointer().delete_thread(job.task_id)
+        except Exception as exc:
+            logger.warning(f"checkpoint 终态回收失败：{exc}", extra={"task_id": job.task_id})
 
     # 推送节点完成事件和最终状态到进度队列
     if progress_q is not None:
