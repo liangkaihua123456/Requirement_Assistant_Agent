@@ -57,6 +57,18 @@ class Settings(BaseModel):
         )
     )
 
+    # JWT / Auth
+    jwt_secret_key: str = Field(
+        default_factory=lambda: os.getenv("JWT_SECRET_KEY", "dev-only-insecure-jwt-secret-key-change-me-please-32b")
+    )
+    jwt_algorithm: str = Field(default_factory=lambda: os.getenv("JWT_ALGORITHM", "HS256"))
+    access_token_expire_minutes: int = Field(
+        default_factory=lambda: int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+    )
+    refresh_token_expire_days: int = Field(
+        default_factory=lambda: int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+    )
+
     # App
     app_env: str = Field(default_factory=lambda: os.getenv("APP_ENV", "development"))
     log_level: str = Field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))

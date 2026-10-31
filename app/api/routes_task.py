@@ -5,7 +5,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.api.deps import get_current_user
 from pydantic import BaseModel, Field
 
 from app.core.logger import logger
@@ -17,6 +19,12 @@ from app.storage import repo_task
 from app.tools.export_tool import export_deliverable
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+
+def _ensure_owner(task: dict | None, user_id: int) -> dict:
+    if task is None or task.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
 
 
 class CreateTaskRequest(BaseModel):
@@ -51,15 +59,19 @@ class TaskStatusResponse(BaseModel):
 
 
 @router.get("")
-async def list_tasks_endpoint(limit: int = 50, offset: int = 0):
-    return await repo_task.list_tasks(limit=limit, offset=offset)
+async def list_tasks_endpoint(
+    limit: int = 50,
+    offset: int = 0,
+    current_user: dict = Depends(get_current_user),
+):
+    return await repo_task.list_tasks(limit=limit, offset=offset, user_id=current_user["id"])
 
 
 @router.post("", response_model=CreateTaskResponse)
-async def create_task(req: CreateTaskRequest):
+async def create_task(req: CreateTaskRequest, current_user: dict = Depends(get_current_user)):
     """Create a task quickly and run the graph in the background."""
     started = time.perf_counter()
-    task_id = await repo_task.create_task(req.user_input)
+    task_id = await repo_task.create_task(req.user_input, user_id=current_user["id"])
     initial_state = {
         "user_input": req.user_input,
         "task_id": task_id,
@@ -99,10 +111,8 @@ async def create_task(req: CreateTaskRequest):
 
 
 @router.get("/{task_id}", response_model=TaskStatusResponse)
-async def get_task_status(task_id: str):
-    task = await repo_task.get_task(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+async def get_task_status(task_id: str, current_user: dict = Depends(get_current_user)):
+    task = _ensure_owner(await repo_task.get_task(task_id), current_user["id"])
 
     state_snapshot = task.get("state_snapshot") or {}
     interrupt_info = state_snapshot.get("interrupt_info")
@@ -159,10 +169,8 @@ def _has_materialized_graph_state(graph_state: Any) -> bool:
 
 
 @router.post("/{task_id}/feedback")
-async def submit_feedback(task_id: str, req: FeedbackRequest):
-    task = await repo_task.get_task(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+async def submit_feedback(task_id: str, req: FeedbackRequest, current_user: dict = Depends(get_current_user)):
+    task = _ensure_owner(await repo_task.get_task(task_id), current_user["id"])
     if task["status"] != "waiting_human":
         raise HTTPException(status_code=400, detail="Task is not waiting for human feedback")
     if not has_checkpoint(task_id):
@@ -200,10 +208,8 @@ async def submit_feedback(task_id: str, req: FeedbackRequest):
 
 
 @router.get("/{task_id}/result")
-async def get_task_result(task_id: str):
-    task = await repo_task.get_task(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+async def get_task_result(task_id: str, current_user: dict = Depends(get_current_user)):
+    task = _ensure_owner(await repo_task.get_task(task_id), current_user["id"])
 
     result_data = task.get("result", {})
     if not result_data or task["status"] != "completed":

@@ -1,4 +1,4 @@
-import axios from 'axios'
+import { http as api } from '@/composables/useAuth'
 import type {
   CreateTaskResponse,
   TaskStatusResponse,
@@ -7,11 +7,6 @@ import type {
   TaskResult,
   TaskListItem,
 } from '@/types'
-
-const api = axios.create({
-  baseURL: '/api',
-  timeout: 120000,
-})
 
 export function useTaskApi() {
   async function createTask(userInput: string): Promise<CreateTaskResponse> {

@@ -10,13 +10,14 @@ from sqlalchemy import select, update
 from app.storage.db import TaskRecord, FeedbackRecord, get_db_session
 
 
-async def create_task(user_input: str) -> str:
+async def create_task(user_input: str, user_id: int | None = None) -> str:
     """创建新任务，返回 task_id。"""
     task_id = str(uuid.uuid4())[:8]
     async with get_db_session() as session:
         record = TaskRecord(
             task_id=task_id,
             user_input=user_input,
+            user_id=user_id,
             status="created",
         )
         session.add(record)
@@ -34,6 +35,7 @@ async def get_task(task_id: str) -> dict | None:
             return None
         return {
             "task_id": record.task_id,
+            "user_id": record.user_id,
             "user_input": record.user_input,
             "status": record.status,
             "current_node": record.current_node,
@@ -70,12 +72,14 @@ async def save_feedback(task_id: str, content: str, node: str = "", feedback_typ
         await session.commit()
 
 
-async def list_tasks(limit: int = 50, offset: int = 0) -> list[dict]:
-    """列出任务（分页）。"""
+async def list_tasks(limit: int = 50, offset: int = 0, user_id: int | None = None) -> list[dict]:
+    """列出任务（分页，可按用户隔离）。"""
     async with get_db_session() as session:
+        stmt = select(TaskRecord)
+        if user_id is not None:
+            stmt = stmt.where(TaskRecord.user_id == user_id)
         stmt = (
-            select(TaskRecord)
-            .order_by(TaskRecord.created_at.desc())
+            stmt.order_by(TaskRecord.created_at.desc())
             .offset(offset)
             .limit(limit)
         )

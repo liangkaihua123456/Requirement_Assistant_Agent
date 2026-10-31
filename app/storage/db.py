@@ -28,6 +28,7 @@ class TaskRecord(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     task_id = Column(String(64), unique=True, nullable=False, index=True)
     user_input = Column(Text, nullable=False)
+    user_id = Column(Integer, index=True, nullable=True)
     status = Column(String(32), nullable=False, default="created")
     current_node = Column(String(64), default="")
     state_snapshot = Column(Text, default="{}")
@@ -47,6 +48,33 @@ class FeedbackRecord(Base):
     node = Column(String(64), default="")
     feedback_type = Column(String(32), default="general")
     content = Column(Text, default="")
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class UserRecord(Base):
+    """用户表（登录 / 注册 / 鉴权）。"""
+
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(64), unique=True, nullable=False, index=True)
+    email = Column(String(255), unique=True, nullable=True, index=True)
+    password_hash = Column(String(255), nullable=False)
+    is_active = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PasswordResetTokenRecord(Base):
+    """忘记密码的一次性重置 token（仅存哈希）。"""
+
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    used = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, server_default=func.now())
 
 
@@ -74,11 +102,28 @@ async def get_session_factory() -> async_sessionmaker[AsyncSession]:
     return _session_factory
 
 
+def _ensure_columns(sync_conn) -> None:
+    """幂等补列迁移：create_all 不会给已存在的表加列，这里手动补齐。
+
+    主要用于给历史 tasks 表补上 user_id（鉴权改造后任务归属用户）。
+    """
+    from sqlalchemy import inspect, text
+
+    insp = inspect(sync_conn)
+    table_names = set(insp.get_table_names())
+    if "tasks" in table_names:
+        cols = {c["name"] for c in insp.get_columns("tasks")}
+        if "user_id" not in cols:
+            sync_conn.execute(text("ALTER TABLE tasks ADD COLUMN user_id INTEGER"))
+            sync_conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_user_id ON tasks (user_id)"))
+
+
 async def init_db():
-    """初始化数据库（创建表）。"""
+    """初始化数据库（创建新表 + 补齐已存在表缺失的列）。"""
     engine = await get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_ensure_columns)
 
 
 @asynccontextmanager

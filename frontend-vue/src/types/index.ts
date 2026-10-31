@@ -194,3 +194,27 @@ export interface SSEEvent {
   status?: string
   message?: string
 }
+
+// ===== Auth / User types (JWT) =====
+export interface User {
+  id: number
+  username: string
+  email: string | null
+}
+
+export interface TokenResponse {
+  access_token: string
+  refresh_token: string
+  token_type: string
+}
+
+export interface RegisterRequest {
+  username: string
+  password: string
+  email?: string | null
+}
+
+export interface ForgotPasswordResponse {
+  message: string
+  reset_token?: string
+}

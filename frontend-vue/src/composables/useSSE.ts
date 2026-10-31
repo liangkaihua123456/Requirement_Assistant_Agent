@@ -1,4 +1,5 @@
 import { ref, onUnmounted } from 'vue'
+import { getAccessToken } from '@/composables/useAuth'
 import type { SSEEvent } from '@/types'
 
 export function useSSE(taskId: string | null) {
@@ -12,7 +13,8 @@ export function useSSE(taskId: string | null) {
     if (!taskId) return
     disconnect()
 
-    const url = `/api/tasks/${taskId}/stream`
+    const token = getAccessToken()
+    const url = `/api/tasks/${taskId}/stream${token ? `?token=${encodeURIComponent(token)}` : ''}`
     eventSource = new EventSource(url)
     isConnected.value = true
     error.value = null

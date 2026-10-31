@@ -18,7 +18,9 @@ import asyncio
 import json
 from typing import Any, AsyncGenerator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.api.deps import get_current_user
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.logger import logger
@@ -29,7 +31,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks-stream"])
 
 
 @router.get("/{task_id}/stream")
-async def stream_task(task_id: str):
+async def stream_task(task_id: str, current_user: dict = Depends(get_current_user)):
     """以 SSE 方式实时推送任务执行进度。
 
     - 任务必须已存在（先调用 POST /tasks 创建）
@@ -38,7 +40,7 @@ async def stream_task(task_id: str):
     - 客户端断开连接后自动停止推送
     """
     task = await repo_task.get_task(task_id)
-    if task is None:
+    if task is None or task.get("user_id") != current_user["id"]:
         raise HTTPException(status_code=404, detail="Task not found")
 
     return EventSourceResponse(

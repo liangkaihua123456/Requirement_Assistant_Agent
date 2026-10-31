@@ -20,3 +20,8 @@ sse-starlette>=1.6,<3.0
 json-repair>=0.30,<1.0
 pytest>=8.2,<9.0
 pytest-asyncio>=0.23,<1.0
+
+# Auth / JWT
+PyJWT>=2.8,<3.0
+bcrypt>=4.1,<6.0
+email-validator>=2.0,<3.0

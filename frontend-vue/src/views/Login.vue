@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowRight, Eye, EyeOff, Lock, Sparkles, User } from '@lucide/vue'
-import { useAuth } from '@/composables/useAuth'
+import { useAuth, authErrorMessage } from '@/composables/useAuth'
 
 const route = useRoute()
 const router = useRouter()
@@ -16,19 +16,21 @@ const submitting = ref(false)
 
 const highlights = ['需求澄清', '方案与工程交付', '评审后打包']
 
-function handleSubmit() {
+async function handleSubmit() {
   error.value = ''
   submitting.value = true
-  const ok = login(username.value, password.value)
-  if (!ok) {
+  try {
+    await login(username.value.trim(), password.value)
+    const redirect =
+      typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')
+        ? route.query.redirect
+        : '/'
+    router.replace(redirect)
+  } catch (e: any) {
+    error.value = authErrorMessage(e, '登录失败，请重试')
+  } finally {
     submitting.value = false
-    error.value = '用户名或密码不正确'
-    return
   }
-  const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')
-    ? route.query.redirect
-    : '/'
-  router.replace(redirect)
 }
 </script>
 
@@ -51,7 +53,7 @@ function handleSubmit() {
       <form class="form-panel" @submit.prevent="handleSubmit">
         <p class="form-kicker">欢迎回来</p>
         <h2>登录工作台</h2>
-        <p class="form-desc">使用管理员账号进入需求交付平台。</p>
+        <p class="form-desc">使用账号密码进入需求交付平台。</p>
 
         <label>
           <span>用户名</span>
@@ -94,7 +96,11 @@ function handleSubmit() {
           <ArrowRight :size="16" />
         </button>
 
-        <p class="hint">演示账号 <strong>admin</strong> / <strong>admin</strong></p>
+        <p class="hint">
+          <router-link to="/register" class="hint-link">注册账号</router-link>
+          <span aria-hidden="true">·</span>
+          <router-link to="/forgot-password" class="hint-link">忘记密码？</router-link>
+        </p>
       </form>
     </section>
   </div>
@@ -323,4 +329,12 @@ label span {
   .brand-panel h1 { font-size: 28px; }
   .form-panel { padding: 28px 22px 32px; }
 }
+
+.hint-link {
+  color: #3157e6;
+  text-decoration: none;
+  font-weight: 600;
+}
+.hint-link:hover { text-decoration: underline; }
+.hint { display: flex; gap: 10px; justify-content: center; align-items: center; }
 </style>
