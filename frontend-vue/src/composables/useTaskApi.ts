@@ -72,8 +72,18 @@ export function useTaskApi() {
     return data
   }
 
-  async function reoptimizeTask(taskId: string): Promise<{ task_id: string }> {
-    const { data } = await api.post<{ task_id: string }>(`/tasks/${taskId}/reoptimize`)
+  async function reoptimizeTask(
+    taskId: string,
+    requirement?: string,
+    keepBaseline = true
+  ): Promise<{ task_id: string; mode: string; brief_applied: boolean }> {
+    const { data } = await api.post<{ task_id: string; mode: string; brief_applied: boolean }>(
+      `/tasks/${taskId}/reoptimize`,
+      {
+        reoptimize_requirement: requirement?.trim() ? requirement.trim() : null,
+        keep_baseline: keepBaseline,
+      }
+    )
     return data
   }
 

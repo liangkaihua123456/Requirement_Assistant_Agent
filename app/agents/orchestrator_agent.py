@@ -232,8 +232,10 @@ def _save_task_to_memory(state: AgentState) -> None:
     记忆巩固（consolidation）。
     """
     review = state.get("review_result") or {}
-    # 只保存通过评审且评分达标的产物
-    if not review.get("passed", False) or (review.get("overall_score") or 0) < 7:
+    # 准入：评审通过，或人工审批放行的产物（能走到打包即已人工批准——
+    # 人工判断是比覆盖率规则更强的验收信号，此前一律拒写导致高分任务零沉淀）
+    accepted = bool(review.get("passed")) or bool(state.get("human_approved"))
+    if not accepted or (review.get("overall_score") or 0) < 7:
         return
     # 记忆关闭时不写库：写入路径会触发 Chroma 连接、冲突检索与 seed
     if not resolve_memory_enabled(state.get("metadata") or {}):

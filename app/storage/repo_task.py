@@ -259,6 +259,23 @@ def _task_summary(record: TaskRecord) -> dict:
     }
 
 
+async def list_feedbacks(task_id: str, limit: int = 5) -> list[dict]:
+    """按时间正序读取任务的澄清/审批问答记录（供迭代历史卡使用）。"""
+    async with get_db_session() as session:
+        stmt = (
+            select(FeedbackRecord)
+            .where(FeedbackRecord.task_id == task_id)
+            .order_by(FeedbackRecord.created_at.asc())
+            .limit(limit)
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+    return [
+        {"node": r.node, "feedback_type": r.feedback_type, "content": r.content,
+         "created_at": str(r.created_at)}
+        for r in rows
+    ]
+
+
 async def list_tasks_by_status(statuses: list[str], limit: int = 200) -> list[dict]:
     """List tasks whose status is in the provided set."""
     if not statuses:

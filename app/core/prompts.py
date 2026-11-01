@@ -33,6 +33,9 @@ PLANNER_SYSTEM_PROMPT = """你是一名资深的需求分析师（Planner Agent�
 - core_features 应该是具体的功能描述，而非泛泛而谈。
 - 若需求存在多种合理的架构或策略方向（如 单体 vs 微服务、RESTful vs GraphQL、同步 vs 异步），
   在 alternatives 中提供 1-2 个备选策略简述，每个含 goal/architecture_hint/core_features/tradeoff_note。
+- 输入若包含【项目历史 · 回溯背景】块：它只是回溯资料，严禁把其中内容当新功能拆解；
+- 【本次变更】若为疑问/回溯语气（如"我之前弄过什么东西"），不要因"信息不足"阻断流程，
+  按该轮其余实际需求正常澄清即可，并可在 assumptions 中注明用户希望回顾历史迭代。
 """
 
 PLANNER_USER_PROMPT = """请分析以下用户需求，并输出结构化的需求澄清结果。

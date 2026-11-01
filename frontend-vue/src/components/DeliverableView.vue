@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { PackageOpen, Download, Copy, Check, FileJson } from '@lucide/vue'
 import { useTaskApi } from '@/composables/useTaskApi'
+import { getAccessToken } from '@/composables/useAuth'
 import type { TaskResult } from '@/types'
 
 const props = defineProps<{ taskId: string }>()
@@ -12,7 +13,11 @@ const fetched = ref(false)
 const copied = ref(false)
 
 function download(kind: 'zip' | 'docx') {
-  window.open(`/api/tasks/${props.taskId}/export/${kind}`, '_blank')
+  // window.open 是浏览器原生请求，带不了 Authorization 头，
+  // 用 deps.get_current_user 支持的 ?token= 兜底传凭证
+  const token = getAccessToken()
+  const q = token ? `?token=${encodeURIComponent(token)}` : ''
+  window.open(`/api/tasks/${props.taskId}/export/${kind}${q}`, '_blank')
 }
 
 async function fetchResult() {

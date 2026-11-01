@@ -39,6 +39,13 @@ class CreateTaskRequest(BaseModel):
     project: str | None = Field(None, max_length=64, description="所属项目，长期记忆按项目隔离，默认 default")
 
 
+class ReoptimizeRequest(BaseModel):
+    reoptimize_requirement: str | None = Field(
+        None, max_length=4000, description="本次要调整/新增的需求描述；留空则沿用既有行为直接重跑工程与评审"
+    )
+    keep_baseline: bool = Field(True, description="True=原需求与变更描述共同生效；False=以新描述为准（原文仅作来源记录）")
+
+
 class CreateTaskResponse(BaseModel):
     task_id: str
     status: str
@@ -64,6 +71,8 @@ class TaskStatusResponse(BaseModel):
     technical_design: dict | None = None
     metrics: dict | None = None
     error_message: str | None = None
+    source_task_id: str | None = None
+    project_history: str | None = None
 
 
 @router.get("")
@@ -186,6 +195,8 @@ async def get_task_status(task_id: str, current_user: dict = Depends(get_current
         technical_design=state_snapshot.get("technical_design"),
         metrics=extract_metrics(state_snapshot),
         error_message=_error_message(state_snapshot),
+        source_task_id=(state_snapshot.get("metadata") or {}).get("source_task_id"),
+        project_history=(state_snapshot.get("metadata") or {}).get("project_history"),
     )
 
 
@@ -246,9 +257,70 @@ async def submit_feedback(task_id: str, req: FeedbackRequest, current_user: dict
     }
 
 
+async def _build_iteration_history(project_id: str, source_task_id: str, max_chars: int = 1600) -> str:
+    """组装项目回溯卡：迭代链（最多回溯源 3 级）+ 各轮澄清/审批问答 + 历史案例。
+
+    用途：迭代任务的 agent 与用户都能看到"之前做过什么、问过什么"，
+    回答类变更描述（如"我之前弄过什么东西"）不再石沉大海。
+    """
+    lines: list[str] = []
+    chain: list[str] = []
+    cur: str | None = source_task_id
+    for _ in range(4):
+        if not cur:
+            break
+        t = await repo_task.get_task(cur)
+        if t is None:
+            break
+        chain.append(cur)
+        cur = ((t.get("state_snapshot") or {}).get("metadata") or {}).get("source_task_id")
+
+    for tid in chain:
+        t = await repo_task.get_task(tid)
+        if t is None:
+            continue
+        snap = t.get("state_snapshot") or {}
+        meta = snap.get("metadata") or {}
+        ui = t.get("user_input") or ""
+        brief_part = ""
+        for marker in ("【本次变更】", "【本次需求变更"):
+            if marker in ui:
+                brief_part = ui.split(marker, 1)[1].split("【项目历史", 1)[0][:100].strip()
+                break
+        rv = snap.get("review_result") or {}
+        verdict = "通过" if rv.get("passed") else ("未通过" if rv else "无评审")
+        lines.append(f"· 任务 {tid}｜状态 {t.get('status')}｜评审 {verdict}({rv.get('overall_score', '-')})"
+                     + (f"｜变更: {brief_part}" if brief_part else ""))
+        for q in list((snap.get("clarified_requirement") or {}).get("open_questions") or [])[:3]:
+            qs = str(q).strip().replace("\n", " ")[:90]
+            if qs:
+                lines.append(f"    [问] {qs}")
+        for f in await repo_task.list_feedbacks(tid, limit=4):
+            q = (f.get("content") or "").strip().replace("\n", " ")[:110]
+            if q:
+                lines.append(f"    [{f.get('feedback_type') or f.get('node') or 'clarify'}] {q}")
+
+    from app.storage.repo_project_memory import list_memory_archive
+    for r in list_memory_archive(project_id=project_id, memory_type="case", limit=5)[:5]:
+        if r.get("task_id") in chain:
+            continue
+        lines.append(f"· 项目历史案例：{r.get('product_name') or r.get('memory_key')}（评分 {r.get('overall_score')}）")
+
+    text = "\n".join(lines)
+    return text[:max_chars] if text else ""
+
+
 @router.post("/{task_id}/reoptimize")
-async def reoptimize_task(task_id: str, current_user: dict = Depends(get_current_user)):
-    """基于已有 PRD 重新执行工程与评审，生成一个新任务。"""
+async def reoptimize_task(
+    task_id: str,
+    req: ReoptimizeRequest | None = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """二次优化：默认基于已有 PRD 重跑工程与评审（repair/rebuild）。
+
+    携带 reoptimize_requirement 时视为"重新讲需求"：强制 rebuild，从规划起
+    按新描述重做 PRD、方案设计与工程实现；旧任务及其产物保持不变，仅作引用。
+    """
     original = _ensure_owner(await repo_task.get_task(task_id), current_user["id"])
     if original is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -256,41 +328,82 @@ async def reoptimize_task(task_id: str, current_user: dict = Depends(get_current
     snapshot = original.get("state_snapshot") or {}
     prd_doc = snapshot.get("prd_doc") or {}
     review = snapshot.get("review_result") or {}
+    brief = ((req.reoptimize_requirement if req else None) or "").strip()
+    project_id = original.get("project_id") or "default"
 
     if not prd_doc:
         raise HTTPException(status_code=400, detail="任务尚未产出 PRD，无法二次优化")
-    if review.get("passed"):
-        raise HTTPException(status_code=400, detail="任务已通过评审，无需二次优化")
+    if review.get("passed") and not brief:
+        raise HTTPException(
+            status_code=400,
+            detail="任务已通过评审，无需二次优化；如有需求变更请填写变更描述后再迭代",
+        )
+
+    design = snapshot.get("technical_design") or {}
+    if brief:
+        mode = "rebuild"
+        keep_baseline = bool(req.keep_baseline)
+        user_input = (
+            f"{original['user_input']}\n\n【本次变更】\n{brief}"
+            if keep_baseline
+            else f"【本次需求变更，以此为准（迭代自任务 {task_id}）】\n{brief}"
+        )
+    else:
+        mode = "repair" if design else "rebuild"
+        user_input = original["user_input"]
+
+    history = await _build_iteration_history(project_id, task_id) if brief else ""
+    if history:
+        # 让迭代任务"看得见自己之前做过/问过什么"：历史卡进 user_input（agent 可读）
+        # 与 metadata（前端可直接展示为产物）
+        user_input += f"\n\n【项目历史 · 回溯背景，非新需求】\n{history}"
 
     new_task_id = await repo_task.create_task(
-        original["user_input"], user_id=current_user["id"], project_id=original.get("project_id") or "default"
+        user_input, user_id=current_user["id"], project_id=project_id
     )
-    design = snapshot.get("technical_design") or {}
-    mode = "repair" if design else "rebuild"
 
     initial_state = {
-        "user_input": original["user_input"],
+        "user_input": user_input,
         "task_id": new_task_id,
-        "project_id": original.get("project_id") or "default",
+        "project_id": project_id,
         "max_reflow_count": get_settings().max_reflow_count,
         "reflow_count": 0,
         "repair_count": 0,
-        "prd_doc": prd_doc,
-        "clarified_requirement": snapshot.get("clarified_requirement") or {},
         "metadata": {
             "reoptimize": True,
             "reoptimize_mode": mode,
             "source_task_id": task_id,
             "task_id": new_task_id,
+            "has_requirement_brief": bool(brief),
+            "project_history": history or None,
         },
     }
+    if brief:
+        # 带需求变更：不投喂旧 PRD/澄清结论，让 planner→solution→engineer 全链路
+        # 按新描述重做；旧产物通过 source_task_id 可查
+        initial_state["metadata"]["reference_prd"] = {
+            "product_name": prd_doc.get("product_name") or "",
+            "domain": prd_doc.get("domain") or "",
+        }
+    else:
+        initial_state["prd_doc"] = prd_doc
+        initial_state["clarified_requirement"] = snapshot.get("clarified_requirement") or {}
     if mode == "repair":
         initial_state["technical_design"] = design
 
     await repo_task.update_task(new_task_id, state_snapshot=initial_state)
     await enqueue_start(new_task_id, initial_state)
-    logger.info(f"Reoptimize task {new_task_id} created from {task_id} (mode={mode})")
-    return {"task_id": new_task_id, "source_task_id": task_id, "mode": mode, "status": "queued"}
+    logger.info(
+        f"Reoptimize task {new_task_id} created from {task_id} "
+        f"(mode={mode}, brief={'yes' if brief else 'no'})"
+    )
+    return {
+        "task_id": new_task_id,
+        "source_task_id": task_id,
+        "mode": mode,
+        "brief_applied": bool(brief),
+        "status": "queued",
+    }
 
 
 @router.post("/{task_id}/retry")

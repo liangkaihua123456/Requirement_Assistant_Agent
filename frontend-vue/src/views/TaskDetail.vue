@@ -112,7 +112,8 @@ onUnmounted(() => {
 })
 
 watch(lastEvent, (event) => {
-  if (event && (event.type === 'node_end' || event.type === 'done' || event.type === 'interrupt' || event.type === 'error' || event.type === 'node_start' || event.type === 'heartbeat')) {
+  // done 不再触发查询：终态状态由 queryStatus 自身刷新，再查会重新开流形成环
+  if (event && ['node_end', 'interrupt', 'error', 'node_start', 'heartbeat'].includes(event.type)) {
     queryStatus()
   }
 })
@@ -129,7 +130,14 @@ async function queryStatus(options: { manual?: boolean } = {}) {
   try {
     const data = await getTaskStatus(id)
     store.setStatusData(data)
-    if (data.status !== 'queued') connectSSE()
+    // 仅在"进行中"开进度流；终态/待人工不开并主动关闭残余连接。
+    // 对终态任务开流会秒回 done 关流，而 watch 收到 done 又触发
+    // queryStatus → connectSSE，形成每秒一对请求的自环风暴。
+    if (['completed', 'error', 'cancelled', 'waiting_human'].includes(data.status)) {
+      disconnectSSE()
+    } else {
+      connectSSE()
+    }
     if (['queued', 'running'].includes(data.status)) startStatusPoll()
     else stopStatusPoll()
   } catch {
@@ -161,8 +169,9 @@ const needsApproval = computed(() => {
 })
 
 const canReoptimize = computed(() => {
+  // 带需求变更的迭代对"已通过评审"任务同样开放（v2 场景）；是否放行由后端校验
   const review = store.statusData?.review_result
-  return !!review && review.passed === false && store.taskStatus !== 'running'
+  return !!review && !['running', 'queued'].includes(store.taskStatus || '')
 })
 
 const canRetry = computed(() => store.taskStatus === 'error')
@@ -190,24 +199,25 @@ async function handleRetry() {
   }
 }
 
-async function handleReoptimize() {
-  try {
-    await ElMessageBox.confirm(
-      '将基于当前 PRD 重新执行工程实现与评审，生成一个新任务。原任务保留不变。',
-      '二次优化',
-      { type: 'info', confirmButtonText: '开始优化', cancelButtonText: '取消' }
-    )
-  } catch {
-    return
-  }
+const reoptDialog = ref(false)
+const reoptBrief = ref('')
+const reoptKeepBaseline = ref(true)
 
+function openReoptimizeDialog() {
+  reoptBrief.value = ''
+  reoptKeepBaseline.value = true
+  reoptDialog.value = true
+}
+
+async function handleReoptimize() {
   reoptimizing.value = true
   try {
-    const result = await reoptimizeTask(taskId.value)
-    ElMessage.success('已创建优化任务')
+    const result = await reoptimizeTask(taskId.value, reoptBrief.value || undefined, reoptKeepBaseline.value)
+    ElMessage.success(result.brief_applied ? '已按新需求创建迭代任务，将重做 PRD 与方案设计' : '已创建优化任务')
+    reoptDialog.value = false
     await router.push({ name: 'detail', params: { id: result.task_id } })
-  } catch {
-    ElMessage.error('创建失败，请确认该任务已产出 PRD')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '创建失败，请确认该任务已产出 PRD')
   } finally {
     reoptimizing.value = false
   }
@@ -252,7 +262,7 @@ async function handleReoptimize() {
           v-if="canReoptimize"
           class="btn-secondary reoptimize-btn"
           :disabled="reoptimizing"
-          @click="handleReoptimize"
+          @click="openReoptimizeDialog"
         >
           <RefreshCw v-if="reoptimizing" :size="14" class="spinning" />
           <Sparkles v-else :size="14" />
@@ -270,6 +280,18 @@ async function handleReoptimize() {
     </div>
 
     <div v-if="store.statusData">
+      <div
+        v-if="store.statusData.source_task_id || store.statusData.project_history"
+        class="history-card"
+      >
+        <p class="history-title">
+          迭代历史
+          <el-tag v-if="store.statusData.source_task_id" size="small" type="info">
+            源任务 {{ store.statusData.source_task_id }}
+          </el-tag>
+        </p>
+        <pre v-if="store.statusData.project_history" class="history-body">{{ store.statusData.project_history }}</pre>
+      </div>
       <TaskProgress :data="store.statusData" />
       <ExecutionProfile :data="store.statusData" />
 
@@ -332,6 +354,35 @@ async function handleReoptimize() {
       <p>输入任务 ID 查看详情</p>
     </div>
   </div>
+    <el-dialog
+      v-model="reoptDialog"
+      title="二次优化 · 重新讲需求（可选）"
+      width="560px"
+      :close-on-click-modal="false"
+    >
+      <p style="margin:0 0 10px;font-size:13px;color:#666;line-height:1.6">
+        留空：沿用现有 PRD 直接重跑工程实现与评审。<br />
+        填写：视为需求变更，新任务将从规划开始<b>重做 PRD、方案设计与工程实现</b>；
+        原任务及其产物保持不变，仅作来源引用。
+      </p>
+      <el-input
+        v-model="reoptBrief"
+        type="textarea"
+        :rows="6"
+        maxlength="4000"
+        show-word-limit
+        placeholder="例如：新增优惠券发放与核销功能；支付需支持花呗分期；库存扣减改为预占模式……"
+      />
+      <el-checkbox v-model="reoptKeepBaseline" :disabled="!reoptBrief.trim()" style="margin-top:8px">
+        保留原需求作为基线（取消勾选则完全以新描述为准）
+      </el-checkbox>
+      <template #footer>
+        <el-button @click="reoptDialog = false">取消</el-button>
+        <el-button type="primary" :loading="reoptimizing" @click="handleReoptimize">
+          {{ reoptBrief.trim() ? '按新需求迭代' : '开始优化' }}
+        </el-button>
+      </template>
+    </el-dialog>
 </template>
 
 <style scoped>
@@ -373,6 +424,9 @@ async function handleReoptimize() {
   cursor: pointer;
 }
 .reoptimize-btn:hover { border-color: var(--accent); }
+.history-card { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border, #ddd); border-radius: 8px; background: rgba(0,0,0,0.02); }
+.history-title { margin: 0 0 6px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.history-body { margin: 0; font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow-y: auto; font-family: inherit; }
 .reoptimize-btn:disabled { opacity: 0.6; cursor: wait; }
 .retry-btn {
   display: inline-flex;

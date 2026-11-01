@@ -181,6 +181,8 @@ export interface TaskStatusResponse {
   technical_design: TechnicalDesign | null
   metrics: Record<string, unknown> | null
   error_message: string | null
+  source_task_id?: string | null
+  project_history?: string | null
 }
 
 export interface TraceabilityApiItem {
@@ -488,6 +490,8 @@ export interface RegisterRequest {
 export interface ForgotPasswordResponse {
   message: string
   reset_token?: string
+}
+
 // ── Image requirement extraction ──────────────
 export type ExtractSource = 'vision' | 'ocr' | 'none'
 
