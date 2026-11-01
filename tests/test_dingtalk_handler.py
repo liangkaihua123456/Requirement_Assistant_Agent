@@ -101,3 +101,69 @@ async def test_handler_feedback_and_auth(temp_db, monkeypatch) -> None:
         assert task["status"] == "queued"
         binding = await dingtalk_repo.get_active_binding("c1")
         assert binding["pending_kind"] == ""
+
+
+@pytest.mark.asyncio
+async def test_handler_confirm_assist_draft(temp_db, monkeypatch) -> None:
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(service, "enqueue_start", noop)
+    monkeypatch.setattr(service, "enqueue_resume", noop)
+    monkeypatch.setattr(service, "has_checkpoint", lambda task_id: True)
+    monkeypatch.setenv("DINGTALK_ASSIST_ENABLED", "true")
+    monkeypatch.setenv("DINGTALK_ASSIST_CORRECT_REPLY", "false")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    sent: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        bot = DingTalkHandler(http)
+        await bot.process(FakeCallback("m1", "做个待办应用"))
+
+        binding = await dingtalk_repo.get_active_binding("c1")
+        task_id = binding["task_id"]
+        await repo_task.update_task(
+            task_id,
+            status="waiting_human",
+            current_node="human_clarification",
+            state_snapshot={
+                "user_input": "做个待办应用",
+                "clarified_requirement": {"open_questions": ["目标平台？"]},
+            },
+        )
+        await dingtalk_repo.set_pending(
+            task_id,
+            "clarification",
+            {
+                "data": ["目标平台？"],
+                "assist_draft": "优先支持 Web 端，后续再做移动端",
+                "assist_rationale": "补全了平台范围",
+            },
+            "https://example.invalid/hook",
+        )
+
+        await bot.process(FakeCallback("m2", "确认", sender="u1"))
+        assert "已提交" in sent[-1]["text"]["content"]
+        task = await repo_task.get_task(task_id)
+        assert task["status"] == "queued"
+        binding = await dingtalk_repo.get_active_binding("c1")
+        assert binding["pending_kind"] == ""
+
+        from sqlalchemy import select
+
+        from app.storage.db import FeedbackRecord, get_db_session
+
+        async with get_db_session() as session:
+            rows = (
+                await session.execute(
+                    select(FeedbackRecord).where(FeedbackRecord.task_id == task_id)
+                )
+            ).scalars().all()
+        assert any("Web 端" in (row.content or "") for row in rows)

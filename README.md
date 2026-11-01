@@ -115,15 +115,52 @@ feedback in the group, and notifies on completion or failure.
 
 ```dotenv
 DINGTALK_SERVICE_ENABLED=true
-DINGTALK_APP_KEY=your-client-id
-DINGTALK_APP_SECRET=your-client-secret
+
+# Robot 1: asks clarification / review questions via OpenAPI
+DINGTALK_ROBOT1_APP_ID=...
+DINGTALK_ROBOT1_APP_KEY=...
+DINGTALK_ROBOT1_APP_SECRET=...
+# optional; defaults to APP_KEY
+# DINGTALK_ROBOT1_CODE=...
+
+# Robot 2: Stream inbox + assist drafts that need human confirm
+DINGTALK_ROBOT2_APP_ID=...
+DINGTALK_ROBOT2_APP_KEY=...
+DINGTALK_ROBOT2_APP_SECRET=...
+
 # optional
 DINGTALK_NOTIFY_INTERVAL_SECONDS=3
+DINGTALK_ASSIST_ENABLED=true
+DINGTALK_ASSIST_CORRECT_REPLY=true
 ```
 
-The app must be an internal DingTalk application with a robot, Stream mode
-enabled, and the robot added to the test group. The secret is read from `.env`
-only; do not commit it.
+Both robots must be internal DingTalk apps with robot capability, added to the
+same test group. Robot 2 needs Stream mode. Robot 1 needs permission to send
+group messages via OpenAPI. Secrets stay in `.env` only.
+
+When a task waits for humans:
+
+1. Robot 1 posts clarification or review questions (OpenAPI).
+2. Robot 2 calls the model and posts a supplemented / corrected draft. The draft
+   is never submitted automatically.
+
+If Robot 1 credentials are missing, questions fall back to Robot 2's
+`sessionWebhook` and the service logs a warning.
+
+PDF / paper reading:
+
+- DingTalk does **not** put standalone group file uploads into the `@robot`
+  callback payload. This project therefore reads the same file from the group's
+  **group-file space** via OpenAPI (`DINGTALK_GROUP_FILE_ENABLED`).
+- Required app permissions: group-file space read, storage file read, storage
+  download-info read, and contact profile read. Publish the app after granting.
+- Also supports private-chat file send, PDF URL paste, conversation cache, and
+  optional arXiv fallback (`DINGTALK_DOC_ARXIV_FALLBACK`).
+
+The requester confirms with `确认`, overrides with `修改 <content>`, or replies
+in the original way (`通过` / `驳回 <reason>` / free-text clarification). If
+`DINGTALK_ASSIST_CORRECT_REPLY` is on, free-text clarification may be polished
+first and then waits for `确认`.
 
 Operational notes:
 

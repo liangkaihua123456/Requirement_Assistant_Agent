@@ -35,8 +35,9 @@ def test_parse_approval() -> None:
 
 def test_render_waiting_and_status() -> None:
     text = render_waiting("t1", "clarification", ["目标平台？", "要多人吗？"])
+    assert "【机器人1】" in text
     assert "1. 目标平台？" in text
-    assert "仅发起人可回复" in text
+    assert "确认" in text
 
     status = render_task_status(
         {

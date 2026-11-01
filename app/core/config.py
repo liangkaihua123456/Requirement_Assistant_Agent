@@ -74,11 +74,40 @@ class Settings(BaseModel):
         ).lower()
         == "true"
     )
+    # 兼容旧变量：未单独配置机器人2时，DINGTALK_APP_KEY/SECRET 视为机器人2
     dingtalk_app_key: str = Field(
         default_factory=lambda: os.getenv("DINGTALK_APP_KEY", "")
     )
     dingtalk_app_secret: str = Field(
         default_factory=lambda: os.getenv("DINGTALK_APP_SECRET", "")
+    )
+    # 机器人1：提出澄清/评审问题（OpenAPI 主动发群消息）
+    dingtalk_robot1_app_id: str = Field(
+        default_factory=lambda: os.getenv("DINGTALK_ROBOT1_APP_ID", "")
+    )
+    dingtalk_robot1_app_key: str = Field(
+        default_factory=lambda: os.getenv("DINGTALK_ROBOT1_APP_KEY", "")
+    )
+    dingtalk_robot1_app_secret: str = Field(
+        default_factory=lambda: os.getenv("DINGTALK_ROBOT1_APP_SECRET", "")
+    )
+    dingtalk_robot1_code: str = Field(
+        default_factory=lambda: os.getenv("DINGTALK_ROBOT1_CODE", "")
+    )
+    # 机器人2：收消息、建任务、给出建议并接收人工确认（Stream）
+    dingtalk_robot2_app_id: str = Field(
+        default_factory=lambda: os.getenv("DINGTALK_ROBOT2_APP_ID", "")
+    )
+    dingtalk_robot2_app_key: str = Field(
+        default_factory=lambda: os.getenv("DINGTALK_ROBOT2_APP_KEY", "")
+        or os.getenv("DINGTALK_APP_KEY", "")
+    )
+    dingtalk_robot2_app_secret: str = Field(
+        default_factory=lambda: os.getenv("DINGTALK_ROBOT2_APP_SECRET", "")
+        or os.getenv("DINGTALK_APP_SECRET", "")
+    )
+    dingtalk_robot2_code: str = Field(
+        default_factory=lambda: os.getenv("DINGTALK_ROBOT2_CODE", "")
     )
     dingtalk_notify_interval_seconds: float = Field(
         default_factory=lambda: float(os.getenv("DINGTALK_NOTIFY_INTERVAL_SECONDS", "3"))
@@ -89,6 +118,55 @@ class Settings(BaseModel):
             or (BASE_DIR / "data" / "dingtalk.lock")
         )
     )
+    # 机器人2：自动补充/纠错建议，仍需人工确认后才提交
+    dingtalk_assist_enabled: bool = Field(
+        default_factory=lambda: os.getenv(
+            "DINGTALK_ASSIST_ENABLED", "true"
+        ).lower()
+        == "true"
+    )
+    dingtalk_assist_correct_reply: bool = Field(
+        default_factory=lambda: os.getenv(
+            "DINGTALK_ASSIST_CORRECT_REPLY", "true"
+        ).lower()
+        == "true"
+    )
+    # 钉钉附件/论文正文注入
+    dingtalk_doc_max_chars: int = Field(
+        default_factory=lambda: int(os.getenv("DINGTALK_DOC_MAX_CHARS", "40000"))
+    )
+    dingtalk_doc_arxiv_fallback: bool = Field(
+        default_factory=lambda: os.getenv(
+            "DINGTALK_DOC_ARXIV_FALLBACK", "true"
+        ).lower()
+        == "true"
+    )
+    # 读取群文件时的操作者；默认用提问人的 senderStaffId 换 unionId
+    dingtalk_operator_union_id: str = Field(
+        default_factory=lambda: os.getenv("DINGTALK_OPERATOR_UNION_ID", "")
+    )
+    dingtalk_group_file_enabled: bool = Field(
+        default_factory=lambda: os.getenv(
+            "DINGTALK_GROUP_FILE_ENABLED", "true"
+        ).lower()
+        == "true"
+    )
+
+    @property
+    def dingtalk_robot1_configured(self) -> bool:
+        return bool(self.dingtalk_robot1_app_key and self.dingtalk_robot1_app_secret)
+
+    @property
+    def dingtalk_robot2_configured(self) -> bool:
+        return bool(self.dingtalk_robot2_app_key and self.dingtalk_robot2_app_secret)
+
+    @property
+    def dingtalk_robot1_robot_code(self) -> str:
+        return self.dingtalk_robot1_code or self.dingtalk_robot1_app_key
+
+    @property
+    def dingtalk_robot2_robot_code(self) -> str:
+        return self.dingtalk_robot2_code or self.dingtalk_robot2_app_key
 
     # Memory / RAG
     memory_enabled: bool = Field(
