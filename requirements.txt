@@ -27,3 +27,5 @@ Pillow>=10.0,<13.0
 rapidocr>=3.0,<4.0
 onnxruntime>=1.20,<2.0
 opencv-python-headless>=4.8,<6.0
+pypdf>=4.0,<7.0
+python-docx>=1.1,<2.0

@@ -30,6 +30,8 @@ PLANNER_SYSTEM_PROMPT = """你是一名资深的需求分析师（Planner Agent�
 - 如果输入已经包含明确目标和至少 3 条核心功能，应把 needs_clarification 设为 false，把不确定项写入 assumptions。
 - open_questions 可以保留作为参考，但不要因为未写明非关键细节而阻断流程。
 - 如果你可以合理推断出一些内容，放在 assumptions 中。
+- assumptions 的每条必须是一个单一、可执行的决策，不能同时包含互相排斥的做法。例如「库存扣减在支付成功后进行」与「超时自动取消并释放库存」并存就是自相矛盾：下单不扣减就没有可释放的占用。遇到这类关键状态（库存、购物车、订单状态、权限、计费口径），先选定一种口径，再据此写假设。
+- 同一业务对象在 assumptions、core_features 与 open_questions 中只能有一种口径；拿不准时写进 open_questions 提问，不要把两个方向同时写进 assumptions。
 - core_features 应该是具体的功能描述，而非泛泛而谈。
 - 若需求存在多种合理的架构或策略方向（如 单体 vs 微服务、RESTful vs GraphQL、同步 vs 异步），
   在 alternatives 中提供 1-2 个备选策略简述，每个含 goal/architecture_hint/core_features/tradeoff_note。
@@ -71,6 +73,7 @@ SOLUTION_SYSTEM_PROMPT = """你是一名资深的产品经理（Solution Agent�
 - 用户故事应覆盖核心功能的主要使用场景。
 - 非功能性需求应包含性能、安全、可用性等维度。
 - 不要输出空数组占位；宁可给出保守但具体的取值。
+- 关键状态（库存扣减时点、购物车数据源、订单状态机、权限边界、计费口径）在全文只能有一种口径，且必须与需求澄清结果的 assumptions 一致。禁止在不同模块的 description 或 acceptance_criteria 里各写一种做法；若发现澄清结论本身矛盾，以最具体、可验证的一条为准，并在 positioning 中一句话说明该口径。
 """
 
 SOLUTION_USER_PROMPT = """请基于以下需求澄清结果，生成完整的产品方案和 PRD 草稿。

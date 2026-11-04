@@ -7,6 +7,7 @@ import { ArrowRight, BookOpen, Check, ChevronDown, ChevronRight, FileText, Gradu
 import { useTaskApi } from '@/composables/useTaskApi'
 import { useTaskStore } from '@/stores/task'
 import ImageIntake from '@/components/ImageIntake.vue'
+import DocumentIntake from '@/components/DocumentIntake.vue'
 import type { ExtractApplyPayload, PreflightResult, RequirementTemplate } from '@/types'
 
 const router = useRouter()
@@ -22,6 +23,7 @@ const audience = ref('')
 const userInput = ref('')
 const showPreview = ref(false)
 const submitting = ref(false)
+const targetLanguage = ref('')
 const savedTemplates = ref<RequirementTemplate[]>([])
 const selectedTemplate = ref<number | ''>('')
 const preflight = ref<PreflightResult | null>(null)
@@ -208,7 +210,7 @@ async function handleSubmit() {
   if (!canSubmit.value || submitting.value) return
   submitting.value = true
   try {
-    const resp = await createTask(payload.value)
+    const resp = await createTask(payload.value, targetLanguage.value)
     store.setTaskId(resp.task_id)
     store.setTaskStatus('queued')
     ElMessage.success('任务已创建，正在启动协作流程')
@@ -251,6 +253,7 @@ async function handleSubmit() {
         </div>
 
         <ImageIntake @apply="applyExtraction" />
+        <DocumentIntake @apply="applyExtraction" />
 
         <div class="tool-row">
           <el-select
@@ -359,6 +362,24 @@ async function handleSubmit() {
           <pre v-if="showPreview" class="preview-body">{{ composedInput || '尚未填写内容' }}</pre>
         </div>
 
+        <label class="field codegen-field">
+          <span class="field-label">代码产物 <em>可选</em></span>
+          <el-select
+            v-model="targetLanguage"
+            class="custom-single"
+            :disabled="submitting"
+          >
+            <el-option label="不生成代码，仅输出方案" value="" />
+            <el-option label="Python / FastAPI" value="python" />
+            <el-option label="Node.js / NestJS" value="node" />
+            <el-option label="Java / Spring Boot" value="java" />
+            <el-option label="Go / Gin" value="go" />
+          </el-select>
+          <span class="field-hint">
+            选中后额外产出 OpenAPI 接口文档、建表 SQL、后端骨架与前端页面
+          </span>
+        </label>
+
         <div class="input-footer">
           <span class="char-count">{{ charCount }} 字 · 建议 50 字以上</span>
           <el-button class="submit-btn" :loading="submitting" :disabled="!canSubmit" @click="handleSubmit">
@@ -463,6 +484,14 @@ async function handleSubmit() {
   font-weight: 400;
   color: var(--text-muted);
   margin-left: 6px;
+}
+.codegen-field { display: block; margin-bottom: 14px; }
+.field-hint {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .field-grid .field { margin-bottom: 0; }

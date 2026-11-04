@@ -276,6 +276,12 @@ class Settings(BaseModel):
     image_extract_enabled: bool = Field(
         default_factory=lambda: os.getenv("IMAGE_EXTRACT_ENABLED", "true").lower() == "true"
     )
+    document_extract_enabled: bool = Field(
+        default_factory=lambda: os.getenv("DOCUMENT_EXTRACT_ENABLED", "true").lower() == "true"
+    )
+    document_max_bytes: int = Field(
+        default_factory=lambda: int(os.getenv("DOCUMENT_MAX_BYTES", str(20 * 1024 * 1024)))
+    )
     image_max_bytes: int = Field(
         default_factory=lambda: int(os.getenv("IMAGE_MAX_BYTES", str(10 * 1024 * 1024)))
     )

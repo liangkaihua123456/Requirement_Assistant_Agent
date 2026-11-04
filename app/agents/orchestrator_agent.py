@@ -22,6 +22,7 @@ from app.core.logger import logger
 from app.core.prompts import INPUT_NORMALIZE_PROMPT
 from app.graph.state import AgentState
 from app.memory.few_shot import resolve_memory_enabled
+from app.tools.codegen import generate_artifacts
 from app.storage.repo_memory import save_memory_sync
 from app.memory.consolidation import (
     detect_conflict,
@@ -190,15 +191,42 @@ def package_output_node(state: AgentState) -> dict:
     """打包输出节点：汇总所有产物生成最终交付包。"""
     logger.info("Package Output 开始打包", extra={"node": "package_output"})
 
+    # 代码产物是可选步骤：只有用户选了目标语言才生成，失败不阻塞交付。
+    code_artifacts: dict = {"enabled": False, "reason": "not_requested"}
+    language = str(state.get("target_language") or "")
+    if language:
+        try:
+            task_id = str(state.get("task_id") or "")
+            target = get_settings().output_dir / task_id / "code"
+            code_artifacts = generate_artifacts(
+                state.get("prd_doc") or {},
+                state.get("technical_design") or {},
+                language,
+                target,
+            )
+            logger.info(
+                "Code artifacts generated",
+                extra={
+                    "node": "package_output",
+                    "language": language,
+                    "files": code_artifacts.get("file_count", 0),
+                },
+            )
+        except Exception as exc:
+            logger.warning(f"代码产物生成失败：{exc}", extra={"node": "package_output"})
+            code_artifacts = {"enabled": False, "reason": f"failed: {exc}"}
+
     final_output = {
         "clarified_requirement": state.get("clarified_requirement", {}),
         "prd_doc": state.get("prd_doc", {}),
         "technical_design": state.get("technical_design", {}),
         "code_scaffold": state.get("code_scaffold", {}),
+        "code_artifacts": code_artifacts,
         "review_result": state.get("review_result", {}),
         "metadata": {
             "task_id": state.get("task_id", ""),
             "reflow_count": state.get("reflow_count", 0),
+            "target_language": language,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         },
     }
@@ -214,6 +242,8 @@ def package_output_node(state: AgentState) -> dict:
         "current_node": "package_output",
         "next_action": "completed",
         "metadata": final_output,
+        # 顶层同步一份，任务详情接口直接从 state 读取。
+        "code_artifacts": code_artifacts,
         "execution_logs": [
             {
                 "node": "package_output",

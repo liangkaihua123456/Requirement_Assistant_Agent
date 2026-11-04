@@ -32,12 +32,15 @@ class AgentState(TypedDict, total=False):
     # ── 用户输入 ──────────────────────────────────────────────
     user_input: Annotated[str, _replace]
     normalized_input: Annotated[str, _replace]
+    # 目标语言，空字符串表示不生成代码产物
+    target_language: Annotated[str, _replace]
 
     # ── 业务产物（以 dict 存储，便于 JSON 序列化）──────────────
     clarified_requirement: Annotated[dict, _replace]
     prd_doc: Annotated[dict, _replace]
     technical_design: Annotated[dict, _replace]
     code_scaffold: Annotated[dict, _replace]
+    code_artifacts: Annotated[dict, _replace]
     review_result: Annotated[dict, _replace]
 
     # ── 人工交互 ──────────────────────────────────────────────

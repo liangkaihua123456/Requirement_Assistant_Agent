@@ -20,6 +20,7 @@ from app.core.task_queue import enqueue_resume, enqueue_start, make_config
 from app.graph.builder import get_graph
 from app.graph.checkpoints import get_checkpoint_path, get_checkpointer, has_checkpoint
 from app.storage import repo_task
+from app.tools.codegen import normalize_language
 from app.tools.export_tool import export_bundle_zip, export_deliverable, export_docx
 from app.tools.traceability import build_traceability
 
@@ -28,6 +29,8 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 class CreateTaskRequest(BaseModel):
     user_input: str = Field(..., min_length=1, description="User requirement")
+    # 可选：python / node / java / go，留空表示不生成代码产物
+    target_language: str = Field("", description="Target backend language")
 
 
 class CreateTaskResponse(BaseModel):
@@ -53,6 +56,7 @@ class TaskStatusResponse(BaseModel):
     review_result: dict | None = None
     prd_doc: dict | None = None
     technical_design: dict | None = None
+    code_artifacts: dict | None = None
     metrics: dict | None = None
     error_message: str | None = None
 
@@ -71,6 +75,7 @@ async def create_task(req: CreateTaskRequest):
         "user_input": req.user_input,
         "task_id": task_id,
         "max_reflow_count": 2,
+        "target_language": normalize_language(req.target_language),
         "metadata": {
             "task_id": task_id,
             "metrics": {
@@ -170,6 +175,8 @@ async def get_task_status(task_id: str):
         review_result=state_snapshot.get("review_result"),
         prd_doc=state_snapshot.get("prd_doc"),
         technical_design=state_snapshot.get("technical_design"),
+        code_artifacts=state_snapshot.get("code_artifacts")
+        or (state_snapshot.get("metadata") or {}).get("code_artifacts"),
         metrics=extract_metrics(state_snapshot),
         error_message=_error_message(state_snapshot),
     )
@@ -262,6 +269,7 @@ async def reoptimize_task(task_id: str):
         "repair_count": 0,
         "prd_doc": prd_doc,
         "clarified_requirement": snapshot.get("clarified_requirement") or {},
+        "target_language": snapshot.get("target_language") or "",
         "metadata": {
             "reoptimize": True,
             "reoptimize_mode": mode,

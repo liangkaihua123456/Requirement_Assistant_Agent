@@ -24,6 +24,8 @@ const store = useTaskStore()
 const taskId = computed(() => (route.params.id as string) || store.taskId || '')
 const manualLoading = ref(false)
 const busy = ref(false)
+const autoRefresh = ref(true)
+const lastUpdated = ref('')
 const reoptimizing = ref(false)
 const retrying = ref(false)
 const cancelling = ref(false)
@@ -80,27 +82,54 @@ async function handleDeleteTask() {
   }
 }
 const activeTab = ref('products')
+const CODE_KIND_LABELS: Record<string, string> = {
+  spec: '接口文档',
+  ddl: '数据库脚本',
+  backend: '后端代码',
+  frontend: '前端代码',
+  doc: '说明文档',
+}
+const codeArtifacts = computed(() => store.statusData?.code_artifacts ?? null)
+const codeGroups = computed(() => {
+  const files = codeArtifacts.value?.files ?? []
+  return ['spec', 'ddl', 'backend', 'frontend', 'doc']
+    .map((kind) => ({
+      kind,
+      label: CODE_KIND_LABELS[kind] ?? kind,
+      files: files.filter((file) => file.kind === kind),
+    }))
+    .filter((group) => group.files.length > 0)
+})
 
 const { lastEvent, connect: connectSSE, disconnect: disconnectSSE } = useSSE(taskId.value)
-let statusPollTimer: ReturnType<typeof setInterval> | null = null
+let statusPollTimer: ReturnType<typeof setTimeout> | null = null
 
 function stopStatusPoll() {
   if (statusPollTimer) {
-    clearInterval(statusPollTimer)
+    clearTimeout(statusPollTimer)
     statusPollTimer = null
   }
 }
 
-function startStatusPoll() {
-  if (statusPollTimer) return
-  // 长 LLM 调用期间 SSE 可能长时间无 node_end；轮询 current_node 避免页面卡在「排队中」。
-  statusPollTimer = setInterval(() => {
-    if (['queued', 'running'].includes(store.taskStatus || '')) {
-      queryStatus()
-    } else {
-      stopStatusPoll()
-    }
-  }, 3000)
+// 运行中 3s、终态 10s：终态也要刷新，便于同步其他入口触发的重跑或审批。
+function scheduleNextPoll() {
+  stopStatusPoll()
+  if (!autoRefresh.value) return
+  const running = ['queued', 'running'].includes(store.taskStatus || '')
+  statusPollTimer = setTimeout(async () => {
+    await queryStatus()
+    scheduleNextPoll()
+  }, running ? 3000 : 10000)
+}
+
+function toggleAutoRefresh() {
+  autoRefresh.value = !autoRefresh.value
+  if (autoRefresh.value) {
+    void queryStatus()
+    scheduleNextPoll()
+  } else {
+    stopStatusPoll()
+  }
 }
 
 onMounted(() => {
@@ -129,9 +158,9 @@ async function queryStatus(options: { manual?: boolean } = {}) {
   try {
     const data = await getTaskStatus(id)
     store.setStatusData(data)
+    lastUpdated.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
     if (data.status !== 'queued') connectSSE()
-    if (['queued', 'running'].includes(data.status)) startStatusPoll()
-    else stopStatusPoll()
+    scheduleNextPoll()
   } catch {
     if (options.manual) ElMessage.error('查询失败')
   } finally {
@@ -260,12 +289,14 @@ async function handleReoptimize() {
         </button>
         <button
           class="btn-secondary refresh-btn"
-          :disabled="manualLoading"
-          @click="queryStatus({ manual: true })"
+          :class="{ on: autoRefresh }"
+          :title="autoRefresh ? '点击暂停自动刷新' : '点击开启自动刷新'"
+          @click="toggleAutoRefresh"
         >
-          <RefreshCw :size="14" :class="{ spinning: manualLoading }" />
-          {{ manualLoading ? '刷新中' : '刷新' }}
+          <RefreshCw :size="14" :class="{ spinning: autoRefresh && busy }" />
+          {{ autoRefresh ? '自动刷新' : '已暂停' }}
         </button>
+        <span v-if="lastUpdated" class="refresh-time">更新于 {{ lastUpdated }}</span>
       </div>
     </div>
 
@@ -298,6 +329,13 @@ async function handleReoptimize() {
         >
           <GitBranch :size="14" /> 追溯矩阵
         </button>
+        <button
+          :class="['tab', { active: activeTab === 'code' }]"
+          @click="activeTab = 'code'"
+        >
+          <Braces :size="14" /> 代码产物
+          <span v-if="codeArtifacts?.enabled" class="tab-badge">{{ codeArtifacts.file_count }}</span>
+        </button>
         <button :class="['tab', { active: activeTab === 'review' }]" @click="activeTab = 'review'" :disabled="!hasReview">
           <BarChart3 :size="14" /> 评审分析
         </button>
@@ -316,6 +354,33 @@ async function handleReoptimize() {
 
       <div v-if="activeTab === 'trace'">
         <TraceabilityMatrix :task-id="taskId" :active="activeTab === 'trace'" />
+      </div>
+
+      <div v-if="activeTab === 'code'">
+        <div v-if="!codeArtifacts?.enabled" class="empty-block">
+          <p>本任务未生成代码产物。</p>
+          <p class="empty-hint">创建任务时在「代码产物」下拉里选择目标语言，即可额外产出 OpenAPI 文档、建表 SQL、后端骨架与前端页面。</p>
+        </div>
+        <div v-else class="code-panel">
+          <div class="code-summary">
+            <span class="code-lang">{{ codeArtifacts.language_label }}</span>
+            <span>{{ codeArtifacts.file_count }} 个文件</span>
+            <span>{{ codeArtifacts.endpoints }} 个接口</span>
+            <span>{{ codeArtifacts.tables }} 张表</span>
+            <span class="code-export-hint">可在导出 ZIP 中获取完整代码</span>
+          </div>
+          <div class="code-groups">
+            <section v-for="group in codeGroups" :key="group.kind" class="code-group">
+              <h4>{{ group.label }} <em>{{ group.files.length }}</em></h4>
+              <ul>
+                <li v-for="file in group.files" :key="file.path">
+                  <code>{{ file.path }}</code>
+                  <span>{{ (file.bytes / 1024).toFixed(1) }} KB</span>
+                </li>
+              </ul>
+            </section>
+          </div>
+        </div>
       </div>
 
       <div v-if="activeTab === 'review'">
@@ -360,6 +425,8 @@ async function handleReoptimize() {
   cursor: pointer;
 }
 .refresh-btn:disabled { opacity: 0.6; cursor: wait; }
+.refresh-btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-subtle); }
+.refresh-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .header-actions { display: flex; align-items: center; gap: 8px; }
 .reoptimize-btn {
   display: inline-flex;
@@ -439,4 +506,69 @@ async function handleReoptimize() {
   border: none;
   padding: 0;
 }
+
+.tab-badge {
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+.empty-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+.code-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  padding: 16px;
+}
+.code-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.code-lang {
+  padding: 2px 9px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+.code-export-hint { margin-left: auto; color: var(--text-muted); font-size: 11px; }
+.code-groups { display: grid; gap: 16px; }
+.code-group h4 {
+  font-size: 12px;
+  font-weight: 650;
+  margin-bottom: 6px;
+  color: var(--text-primary);
+}
+.code-group h4 em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+.code-group ul { display: grid; gap: 3px; }
+.code-group li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.code-group code { font-family: var(--font-mono); color: var(--text-primary); }
+.code-group li span { color: var(--text-muted); white-space: nowrap; }
 </style>

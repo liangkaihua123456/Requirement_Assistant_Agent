@@ -27,3 +27,8 @@ frontend-vue/.vite/
 
 # UI screenshots used for local verification only (large, not tracked)
 screenshots/
+
+.project-python
+
+# 本地操作记录（含账号与网络配置信息，不入库）
+docs/代码推送操作说明.md

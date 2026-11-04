@@ -16,6 +16,7 @@ import type {
   RequirementTemplate,
   PreflightResult,
   ExtractedRequirement,
+  ExtractedDocument,
   ExtractStatus,
 } from '@/types'
 
@@ -25,9 +26,10 @@ const api = axios.create({
 })
 
 export function useTaskApi() {
-  async function createTask(userInput: string): Promise<CreateTaskResponse> {
+  async function createTask(userInput: string, targetLanguage = ''): Promise<CreateTaskResponse> {
     const { data } = await api.post<CreateTaskResponse>('/tasks', {
       user_input: userInput,
+      target_language: targetLanguage,
     })
     return data
   }
@@ -135,6 +137,15 @@ export function useTaskApi() {
     return data
   }
 
+  async function extractDocument(file: File): Promise<ExtractedDocument> {
+    const form = new FormData()
+    form.append('file', file, file.name || 'requirement.pdf')
+    const { data } = await api.post<ExtractedDocument>('/extract/document', form, {
+      timeout: 120000,
+    })
+    return data
+  }
+
   async function listTasks(limit = 50, offset = 0): Promise<TaskListItem[]> {
     const { data } = await api.get<TaskListItem[]>('/tasks', {
       params: { limit, offset },
@@ -181,5 +192,6 @@ export function useTaskApi() {
     deleteTemplate,
     getExtractStatus,
     extractImage,
+    extractDocument,
   }
 }

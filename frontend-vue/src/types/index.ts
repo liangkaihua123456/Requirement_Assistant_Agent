@@ -179,8 +179,27 @@ export interface TaskStatusResponse {
   review_result: ReviewResult | null
   prd_doc: PRDDocument | null
   technical_design: TechnicalDesign | null
+  code_artifacts: CodeArtifacts | null
   metrics: Record<string, unknown> | null
   error_message: string | null
+}
+
+export interface CodeArtifactFile {
+  path: string
+  kind: 'spec' | 'ddl' | 'backend' | 'frontend' | 'doc'
+  bytes: number
+}
+
+export interface CodeArtifacts {
+  enabled: boolean
+  reason?: string
+  language?: string
+  language_label?: string
+  file_count?: number
+  files?: CodeArtifactFile[]
+  counts?: Record<string, number>
+  endpoints?: number
+  tables?: number
 }
 
 export interface TraceabilityApiItem {
@@ -514,4 +533,15 @@ export interface ExtractApplyPayload {
   constraints: string[]
   audience: string
   text: string
+}
+
+export interface ExtractedDocument {
+  ok: boolean
+  kind: 'pdf' | 'docx'
+  filename: string
+  text: string
+  chars: number
+  pages: number
+  warnings: string[]
+  elapsed_ms: number
 }
